@@ -78,4 +78,6 @@ namespace EPS {
     uintptr_t GetWorldPtr();
     std::vector<uintptr_t> ReadEntitiesFromEntityList(uintptr_t entityList);
     std::vector<uintptr_t> GetStaticObjects(uintptr_t world);
+
+    void CleanupMemory(bool fullReset);
 }

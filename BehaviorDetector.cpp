@@ -878,16 +878,14 @@ static void BD_DetectTriggerbot(const BDLocalSnapshot& current, const std::vecto
 }
 static void BD_AnalyzeSuspicionMetrics() {
     static uint64_t lastAnalysisTime = 0;
-   // static uint64_t lastForceReset = 0;
+    static uint64_t lastForceReset = 0;
     uint64_t currentTime = NowMs();
-    /*
     if (currentTime - lastForceReset > 90000) {
         g_suspicionMetrics = BDSuspicionMetrics{};
         g_trackedTargets.clear();
         lastForceReset = currentTime;
         return;
     }
-    */
     int analysisInterval = 20000;
     if (currentTime - lastAnalysisTime < analysisInterval) return;
 
@@ -1159,8 +1157,6 @@ static DWORD WINAPI BD_PumpThread(LPVOID) {
 
         if (IsValidAddress(g_entityArray)) {
             BD_ESP_Tick(g_entityArray, nowMs);
-
-            // NoRecoil и NoSway
             uintptr_t worldPtr = EPS::GetWorldPtr();
             if (worldPtr) {
                 uintptr_t world = 0;
@@ -1169,7 +1165,6 @@ static DWORD WINAPI BD_PumpThread(LPVOID) {
                     BD_AnalyzeBullets(world, g_prevSnapshot, nowMs);
                 }
             }
-            // NoRecoil и NoSway
         }
 
         int sleepTime = 8 - G.aggressionLevel * 4;

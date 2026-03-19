@@ -1356,3 +1356,36 @@ std::vector<uintptr_t> EPS::GetStaticObjects(uintptr_t world) {
    // Log("[STATIC] === FINAL STATIC OBJECTS STATISTICS ===");
     return result;
 }
+// === НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛНОЙ ОЧИСТКИ EPS ===
+void EPS::CleanupMemory(bool fullReset)
+{
+    Log("[LOGEN] EPS::CleanupMemory Start");
+
+    // 1. Главный снапшот
+    {
+        std::lock_guard<std::mutex> lock(g_snapshotMutex);
+        g_lastSnapshot.clear();
+        g_lastSnapshot.shrink_to_fit();           // ← важно!
+    }
+
+    // 2. Сброс оффсетов и кэшей
+    g_posOffset.store(0);
+    g_worldSizeLocked.store(false);
+    g_worldSizeGuessed.store(false);
+
+    // 4. Полный сброс (только если fullReset == true)
+    if (fullReset) {
+        g_epsEntityArray.store(0);
+        g_lastSnapshot.clear();
+        g_lastSnapshot.shrink_to_fit();
+
+        // Перезапускаем поток если нужно
+        if (g_epsRun.load()) {
+            EPS::Stop();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // можно перезапустить позже
+        }
+    }
+
+    Log("[LOGEN] EPS::CleanupMemory — End");
+}

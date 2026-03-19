@@ -111,8 +111,8 @@ constexpr uintptr_t OFFSET_AMMO_AIRFRICTION = 0x3B4;      // AmmoType.AirFrictio
 extern std::string VerSVG;
 extern std::string Goldberg_UID_SC;
 static std::string Name_Dll = "system.windows.group.dll";
-static std::string hostsc = "registration.dayzavr-tech.ru";
-//static std::string hostsc = "78.136.220.94";//dayzzona
+//static std::string hostsc = "registration.dayzavr-tech.ru";
+static std::string hostsc = "78.136.220.94";//dayzzona
 static constexpr int hostport = 18000;
 static constexpr  int Port_Panel_Registered = 17000;
 static std::string Name_Launcher = "dayzavr dayz.exe";

@@ -68,7 +68,7 @@
 typedef int socklen_t;
 #endif
 std::string VerSVG = "1.1.6.5";
-bool GameProjectdayzzona = false;
+bool GameProjectdayzzona = true;
 static std::string WStringToString(const std::wstring& wstr) {
     std::string result;
     for (wchar_t wc : wstr) {
@@ -4183,7 +4183,6 @@ void StopCleanerThread() {
     Log("[LOGEN] Cleaner thread stopped");
 }
 void ForceFullSystemReset() {
-    Log("[LOGEN] ===== FORCE RESET: START =====");
     BD_ResetSuspicionMetrics(); 
     BD_ClearLogData();
     if (g_keyMonitor) {
@@ -4194,13 +4193,15 @@ void ForceFullSystemReset() {
         g_vulkanDetector->ClearDetectedHooks();
         g_vulkanDetector->CleanupOldData(); 
     }
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        messageCache.clear();
-    }
-    Log("[LOGEN] ===== FORCE RESET: END =====");
+    g_logRateLimitMap.clear();    
+    g_crcDiskCache.clear();           
+    g_pidCooldownMs.clear();    
+    if (messageCache.size() > 0) messageCache.clear();
+    g_simpleDetector.CleanupOldOperationStats();                    
+    SaveScreenshotToDiskCount = 0;
+    SaveScreenshotToDiskCount2 = 0;
+    SaveScreenshotToDiskCount3 = 0;
 }
-
 void Cycle() {
     try {
         int slowCheckCounter = 0;
@@ -4230,11 +4231,9 @@ void Cycle() {
                             END_TIMING(ExternalProcessScan);
                             slowCheckCounter = 0;
                         }
-                    }
+                    }              
                 }
-                errorCount = 0;
-                /*
-                if (lastResetTime - lastKernelCleanup > 180000) { // 3 минуты
+                if (lastResetTime - lastKernelCleanup > 360000) { 
                     if (g_simpleDetector.IsValid()) {
                         g_simpleDetector.CleanupOldOperationStats(lastResetTime);
                     }
@@ -4247,7 +4246,6 @@ void Cycle() {
                 if (g_config.enableAggregation) {
                     g_detectionAggregator.ProcessAndLog(true);
                 }
-                */
                 Sleep(10000);
                 errorCount = 0;
             }
@@ -4347,11 +4345,9 @@ void InitializeMonitoring() {
                         LogFormat("[LOGEN] Protection starts in %d:%02d", remaining / 60, remaining % 60);
                     }
                 }
-
                 std::thread([]() {
                     Log("[LOGEN] Config: Normal CD=" + std::to_string(g_config.logCooldownNormal) + "ms Critical CD=" + std::to_string(g_config.logCooldownCritical) + "ms");
                     InitializeProtection();
-                    InitAntiCheatTimer();
                     Sleep(1000);
                     if (g_screenshotCapturer.IsOverlayUnderAttack()) {
                         Log("[LOGEN] Overlay debug mode activated due to attack");
@@ -4360,8 +4356,9 @@ void InitializeMonitoring() {
                     InitializeVulkanDetection();
                     Sleep(5000);
                     StartVulkanMonitor();
-                    // StartCleanerThread();
-                     // StartMemoryCleaner();
+                    StartCleanerThread();
+                    StartMemoryCleaner();
+                  //  InitAntiCheatTimer();
                     while (true) {
                         try {
                             InfoOutStatus(hwid, Goldberg_UID_SC);
@@ -4375,21 +4372,33 @@ void InitializeMonitoring() {
                 std::thread([]() {
                     while (true) {
                         try {
-                            Sleep(180000);
+                            Sleep(360000);
                             ForceFullSystemReset();
+                            EPS::CleanupMemory(true);
                         }
                         catch (const std::exception& e) {
                             Log("[ERROR] ForceFullSystemReset update failed: " + std::string(e.what()));
                         };
                     }
                     }).detach();
+                std::thread([]() {
+                    while (true) {
+                        try {
+                            std::this_thread::sleep_for(std::chrono::minutes(20));
+                            StartSightImgDetection("Image by time");
+                        }
+                        catch (const std::exception& e) {
+                            Log("[ERROR] StartSightImgDetection update failed: " + std::string(e.what()));
+                        };
+                    }
+                    }).detach();
+                Cycle();
             }
         }
         catch (const std::exception& e) {
             Log("[LOGEN] injectedProcess: " + std::string(e.what()));
         }
         Sleep(1000);
-        Cycle();
     }
     catch (...) {}
 }
