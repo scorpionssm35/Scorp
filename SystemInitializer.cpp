@@ -1,0 +1,119 @@
+﻿#define NOMINMAX
+#include <Windows.h>
+#include <thread>
+#include "SystemInitializer.h"
+#include "LogUtils.h"
+#include "LocalProvider.h"
+#include "EntityPosSampler.h"
+#include "StabilityMonitor.h"
+#include "BehaviorDetector.h"
+#include "GlobalDefines.h"
+
+extern StabilityMonitor g_globalStabilityMonitor;
+
+void StartEssentialMonitors();
+
+bool InitializeSystemsWithStability(uintptr_t world, uintptr_t entityArray) {
+    Log("[LOGEN] [SYSTEM] Starting system initialization...");
+
+    if (!IsValidAddress(world) || !IsValidAddress(entityArray)) {
+        Log("[LOGEN] [CRITICAL] Invalid world or entity array addresses");
+        return false;
+    }
+
+    LP_SetWorld(world);
+    LP_ValidateWorldPointer(world);
+
+    if (EPS::DetectWorldNameFromProcess()) {
+        float worldSize = EPS::EPS_GetWorldSize();
+        std::string worldName = EPS::EPS_GetWorldName();
+        bool isZeroBased = LP_IsZeroBasedMap(worldName);
+
+        LogFormat("[LOGEN] [SYSTEM] Map: %s | Size: %.0f | CoordSystem: %s", worldName.c_str(), worldSize, isZeroBased ? "ZERO-BASED" : "CENTERED");
+    }
+
+    // Проверка камеры без детального логирования
+    float testCamPos[3], testCamFwd[3];
+    if (LP_GetCameraWithRetry(testCamPos, testCamFwd, 5)) {
+        Log("[LOGEN] [SYSTEM] Camera: OK");
+        g_globalStabilityMonitor.ReportCameraSuccess();
+    }
+    else {
+        Log("[LOGEN] [WARNING] Camera system issues - using fallback");
+        g_globalStabilityMonitor.ReportCameraFailure();
+    }
+
+    // Запуск EPS
+    if (!EPS::Start(entityArray)) {
+        Log("[LOGEN] [CRITICAL] EPS failed to start");
+        return false;
+    }
+    Log("[LOGEN] [SYSTEM] EPS: Started");
+
+    // ЗАПУСК ОПТИМИЗИРОВАННЫХ МОНИТОРОВ
+    StartEssentialMonitors();
+
+    // Behavior Detector
+    BDConfig cfg;
+    cfg.aggressionLevel = BDConfig::MEDIUM;
+    BD_Init(cfg);
+
+    if (BD_StartPump(entityArray, GetLocalSnapshot)) {
+        Log("[LOGEN] [SYSTEM] Behavior detection: Started");
+    }
+    Log("[LOGEN] [SYSTEM] Initialization completed successfully");
+    return true;
+}
+
+void StartEssentialMonitors() {
+    // МОНИТОР ЗДОРОВЬЯ С МИНИМАЛЬНЫМ ЛОГИРОВАНИЕМ
+    std::thread([]() {
+        int consecutiveFailures = 0;
+        const int MAX_FAILURES = 5;
+        int healthCheckCount = 0;
+
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            healthCheckCount++;
+
+            // ПРОВЕРКА EPS
+            if (!EPS::IsRunning()) {
+                consecutiveFailures++;
+
+                if (consecutiveFailures >= MAX_FAILURES) {
+                    Log("[LOGEN] [CRITICAL] EPS not running - attempting recovery");
+
+                    uintptr_t currentArray = g_globalEntityArray.load();
+                    if (currentArray && IsValidAddress(currentArray)) {
+                        EPS::Stop();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                        EPS::Start(currentArray);
+                        consecutiveFailures = 0;
+                        Log("[LOGEN] [SYSTEM] EPS recovery completed");
+                    }
+                }
+                continue;
+            }
+
+            // ПРОВЕРКА ДАННЫХ
+            auto snapshot = EPS::GetLastSnapshot();
+            static auto lastDataTime = std::chrono::steady_clock::now();
+
+            if (!snapshot.empty()) {
+                lastDataTime = std::chrono::steady_clock::now();
+                consecutiveFailures = 0; // Сброс при успехе
+            }
+            else {
+                auto timeSinceData = std::chrono::steady_clock::now() - lastDataTime;
+                if (timeSinceData > std::chrono::seconds(30)) {
+                    consecutiveFailures++;
+                }
+            }
+
+            // СТАТУС РАЗ В 10 МИНУТ
+            if (healthCheckCount % 20 == 0) {
+                LogFormat("[LOGEN] [STATUS] Systems: %s | EPS: %s", consecutiveFailures == 0 ? "HEALTHY" : "ISSUES", EPS::IsRunning() ? "RUNNING" : "STOPPED");
+            }
+        }
+        }).detach();
+}

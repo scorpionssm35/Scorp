@@ -1,0 +1,4418 @@
+﻿#include <windows.h>
+#include <dbghelp.h>
+#include <Psapi.h>
+#include <winternl.h>
+#include <ntstatus.h> 
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <tlhelp32.h>
+#include <algorithm>
+#include <cctype>
+#include <iomanip>
+#include <map>
+#include <shlobj.h>
+#include <intrin.h>
+#include <locale>
+#include <codecvt>
+#include <mutex>
+#include <regex>
+#include <memory>
+#include <wintrust.h> 
+#include <softpub.h> 
+#include <wincrypt.h> 
+#include <future>
+#include <unordered_set>
+#include <cstdarg>
+#include <set>
+#include <chrono>
+#ifndef STATUS_INFO_LENGTH_MISMATCH
+#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
+#endif
+#pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "Dbghelp.lib")
+#pragma comment(lib, "Psapi.lib")
+#pragma comment(lib, "Advapi32.lib")
+#define IMAGE_DIRECTORY_ENTRY_IMPORT 1
+#include "LogUtils.h"
+#include <lm.h>
+#include <sddl.h>
+#pragma comment(lib, "Netapi32.lib")
+#include "KernelCheatDetector.h" 
+#include "UltimateScreenshotCapturer.h"
+#include "DetectionAggregator.h"
+#include "KeyToggleMonitor.h"
+#include "AntiCheatTimer.h"
+/*
+* ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
+[WARNING MonitorSuspiciousFunctions] // отключил
+[WARNING Memory]
+[WARNING HOOK]
+[WARNING Module]
+[HOOK] ReadProcessMemory
+[HOOK] WriteProcessMemory
+[HOOK] NtReadVirtualMemory
+[HOOK] NtWriteVirtualMemory
+[HOOK] CreateRemoteThread
+[VEH]
+[LOGEN]
+*/
+#ifndef _SOCKLEN_T
+#define _SOCKLEN_T
+typedef int socklen_t;
+#endif
+std::string VerSVG = "1.1.6.5";
+bool GameProjectdayzzona = false;
+static std::string WStringToString(const std::wstring& wstr) {
+    std::string result;
+    for (wchar_t wc : wstr) {
+        result.push_back(static_cast<char>(wc));
+    }
+    return result;
+}
+static bool isLicenseVersion;
+bool DetermineAndSetGameProcessNames() {
+    std::wstring processPath;
+    bool foundDayZProcess = false;
+
+    for (int attempt = 0; attempt < 25; attempt++) {
+        if (attempt > 0) {
+            Sleep(1000);
+        }
+
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE) {
+           // Log("[LOGEN] Failed to create process snapshot");
+            continue;
+        }
+
+        PROCESSENTRY32 pe32;
+        pe32.dwSize = sizeof(PROCESSENTRY32);
+
+        if (Process32First(hSnapshot, &pe32)) {
+            do {
+                std::wstring processName = pe32.szExeFile;
+                std::wstring processNameLower = processName;
+                std::transform(processNameLower.begin(), processNameLower.end(), processNameLower.begin(), ::towlower);
+
+                if (processNameLower == L"dayz_x64.exe") {
+                    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe32.th32ProcessID);
+                    if (hProcess) {
+                        wchar_t path[MAX_PATH] = { 0 };
+                        DWORD pathSize = MAX_PATH;
+
+                        if (QueryFullProcessImageNameW(hProcess, 0, path, &pathSize)) {
+                            processPath = path;
+                            foundDayZProcess = true;
+                            CloseHandle(hProcess);
+                            CloseHandle(hSnapshot);
+                            goto PROCESS_FOUND;
+                        }
+                        else {
+                           // Log("[LOGEN] Failed to get process path, error: " + std::to_string(GetLastError()));
+                        }
+
+                        CloseHandle(hProcess);
+                    }
+                    else {
+                       // Log("[LOGEN] Failed to open process, error: " + std::to_string(GetLastError()));
+                    }
+                }
+            } while (Process32Next(hSnapshot, &pe32));
+        }
+        else {
+           // Log("[LOGEN] Process32First failed");
+        }
+
+        CloseHandle(hSnapshot);
+    }
+
+    return false;
+
+PROCESS_FOUND:
+
+    if (!foundDayZProcess) {
+        Log("[LOGEN] Critical error: process found but flag not set");
+        return false;
+    }
+    //Log("[LOGEN] Full path: " + WStringToString(processPath));
+    size_t lastSlash = processPath.find_last_of(L"\\/");
+    if (lastSlash == std::wstring::npos) {
+        Log("[LOGEN] Error: cannot parse path");
+        return false;
+    }
+    std::wstring parentDir = processPath.substr(0, lastSlash);
+    size_t parentSlash = parentDir.find_last_of(L"\\/");
+    std::wstring folderName;
+
+    if (parentSlash != std::wstring::npos) {
+        folderName = parentDir.substr(parentSlash + 1);
+    }
+    else {
+        folderName = parentDir;
+    }
+    std::wstring folderNameLower = folderName;
+    std::transform(folderNameLower.begin(), folderNameLower.end(), folderNameLower.begin(), ::towlower);
+
+   // Log("[LOGEN] Game folder: " + WStringToString(folderName));
+    bool isSteamVersion = (folderNameLower == L"dayz");
+
+    if (isSteamVersion) {
+      //  Log("[LOGEN] Detected: Steam version (folder: DayZ)");
+        return false;
+    }
+    else {
+       // Log("[LOGEN] Detected: Non-Steam version (folder: " + WStringToString(folderName) + ")");
+        return true;
+    }
+}
+std::string ToLower(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+    return result;
+}
+std::string Trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    size_t last = str.find_last_not_of(" \t\r\n");
+    if (first == std::string::npos || last == std::string::npos)
+        return "";
+    return str.substr(first, last - first + 1);
+}
+std::string NormalizeProcessName(const std::string& name) {
+    std::string result = ToLower(Trim(name));
+    const std::string exeExt = ".exe";
+    if (result.size() >= exeExt.size() &&
+        result.compare(result.size() - exeExt.size(), exeExt.size(), exeExt) == 0) {
+        result = result.substr(0, result.size() - exeExt.size());
+    }
+    return result;
+}
+std::string GetInjectedProcessName() {
+    char processPath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(NULL, processPath, MAX_PATH)) {
+        std::string fullPath = processPath;
+        size_t lastSlash = fullPath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            std::string exeName = fullPath.substr(lastSlash + 1);
+            return NormalizeProcessName(exeName);
+        }
+    }
+    return "";
+}
+
+std::atomic<bool> g_isProcessBusyServer{ false };
+static void InfoOut(const std::string& hwid, const std::string& id) {
+    try {
+        static int InfoOutcallCount = 0;
+        std::string data = "CL01," + id + std::string("_SVG_") + hwid + ",";
+        const char* SERVER_IP = hostsc.c_str();
+        const int SERVER_PORT = Port_Panel_Registered;
+        std::string portStr = std::to_string(SERVER_PORT);
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            //Log("[LOGEN] TCP InfoOut WSAStartup failed");
+            return;
+        }
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == INVALID_SOCKET) {
+           // Log("[LOGEN] TCP InfoOut Socket creation failed");
+            WSACleanup();
+            return;
+        }
+        DWORD timeout = 5000; 
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(SERVER_PORT);
+        struct hostent* host = gethostbyname(SERVER_IP);
+        if (host == nullptr) {
+            //Log("[LOGEN] TCP InfoOut Failed to resolve host: " + std::string(SERVER_IP));
+            closesocket(sock);
+            WSACleanup();
+            return;
+        }
+
+        addr.sin_addr.s_addr = *((unsigned long*)host->h_addr);
+
+        if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
+            //Log("[LOGEN] TCP InfoOut Connection failed to " + std::string(SERVER_IP) + ":" + portStr);
+            closesocket(sock);
+            WSACleanup();
+            return;
+        }
+
+        int bytesSent = send(sock, data.c_str(), (int)data.length(), 0);
+        if (bytesSent == SOCKET_ERROR) {
+           // Log("[LOGEN] TCP Send failed");
+        }
+        else {
+            InfoOutcallCount++;
+            if (InfoOutcallCount % 2 == 0) {
+               // Log("[LOGEN] TCP TCP HWID sent OK: " + data + " (" + std::to_string(bytesSent) + " bytes)");
+            }
+        }
+
+        closesocket(sock);
+        WSACleanup();
+    }
+    catch (const std::exception& e) {
+        //Log("[LOGEN] TCP InfoOut Error in HWID sent: " + std::string(e.what()));
+    }
+    catch (...) {
+        //Log("[LOGEN] TCP InfoOut Unknown error in HWID sent");
+    }
+}
+static void InfoOutStatus(const std::string& hwid, const std::string& id) {
+    try {
+        static int callCount = 0;
+        std::string data = "CL01," + VerSVG + "," + id + std::string("_SOG_") + hwid + ",";
+        const char* SERVER_IP = hostsc.c_str();
+        const int SERVER_PORT = Port_Panel_Registered;
+        std::string portStr = std::to_string(SERVER_PORT);
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+           // Log("[LOGEN] TCP InfoOutStatus WSAStartup failed");
+            return;
+        }
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == INVALID_SOCKET) {
+            //Log("[LOGEN] TCP InfoOutStatus Socket creation failed");
+            WSACleanup();
+            return;
+        }
+        DWORD timeout = 5000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(SERVER_PORT);
+        struct hostent* host = gethostbyname(SERVER_IP);
+        if (host == nullptr) {
+            //Log("[LOGEN] TCP InfoOutStatus Failed to resolve host: " + std::string(SERVER_IP));
+            closesocket(sock);
+            WSACleanup();
+            return;
+        }
+
+        addr.sin_addr.s_addr = *((unsigned long*)host->h_addr);
+
+        if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
+            //Log("[LOGEN] TCP InfoOutStatus Connection failed to " + std::string(SERVER_IP) + ":" + portStr);
+            closesocket(sock);
+            WSACleanup();
+            return;
+        }
+
+        int bytesSent = send(sock, data.c_str(), (int)data.length(), 0);
+        if (bytesSent == SOCKET_ERROR) {
+            //Log("[LOGEN] TCP InfoOutStatus Send failed");
+        }
+        else {
+            callCount++;
+            if (callCount % 60 == 0) {
+                auto now = std::chrono::system_clock::now();
+                auto time_t_now = std::chrono::system_clock::to_time_t(now);
+                std::tm tm_now;
+                localtime_s(&tm_now, &time_t_now);
+
+                char time_buf[9];
+                strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm_now);
+
+              //  Log(std::string("[LOGEN] TCP InfoOutStatus sent OK: ") + time_buf + ":CL01_" + VerSVG + "_" + id + std::string("_SOG_") + hwid + "_" + " (" + std::to_string(bytesSent) + " bytes)");
+                //Log("[LOGEN] InfoOutStatus sent OK (call #" + std::to_string(callCount) + ")");
+            }
+        }
+
+        closesocket(sock);
+        WSACleanup();
+    }
+    catch (const std::exception& e) {
+        //Log("[LOGEN] TCP InfoOutStatus Error in InfoOutStatus sent: " + std::string(e.what()));
+    }
+    catch (...) {
+       // Log("[LOGEN] TCP InfoOutStatus Unknown error in InfoOutStatus sent");
+    }
+}
+void InfoOutMessageInternal(const std::string& hwid, const std::string& id, const std::string& message, const std::string& data) {
+    __try {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            return;
+        }
+
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == INVALID_SOCKET) {
+            WSACleanup();
+            return;
+        }
+
+        DWORD timeout = 1500;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+
+        u_long mode = 1;
+        ioctlsocket(sock, FIONBIO, &mode);
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(Port_Panel_Registered);
+
+        struct hostent* host = gethostbyname(hostsc.c_str());
+        if (host == nullptr) {
+            closesocket(sock);
+            WSACleanup();
+            return;
+        }
+        addr.sin_addr.s_addr = *((unsigned long*)host->h_addr);
+
+        connect(sock, (sockaddr*)&addr, sizeof(addr));
+
+        fd_set fdset;
+        FD_ZERO(&fdset);
+        FD_SET(sock, &fdset);
+
+        timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+
+        if (select(sock + 1, NULL, &fdset, NULL, &tv) == 1) {
+            int so_error;
+            socklen_t len = sizeof(so_error);
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&so_error, &len);
+
+            if (so_error == 0) {
+                send(sock, data.c_str(), (int)data.length(), 0);
+            }
+        }
+
+        closesocket(sock);
+        WSACleanup();
+    }
+    __finally {
+    }
+}
+void InfoOutMessage(const std::string& hwid, const std::string& id, const std::string& message) {
+    std::string injectedProcess;
+    try {
+        injectedProcess = GetInjectedProcessName();
+        std::transform(injectedProcess.begin(), injectedProcess.end(), injectedProcess.begin(), ::tolower);
+    }
+    catch (...) {
+        return;
+    }
+
+    if (injectedProcess != Name_Game2) {
+        return;
+    }
+
+    if (g_isProcessBusyServer.load()) {
+        return;
+    }
+
+    bool expectedServer = false;
+    if (!g_isProcessBusyServer.compare_exchange_strong(expectedServer, true)) {
+        return;
+    }
+    struct FlagReset {
+        std::atomic<bool>& flag;
+        bool active;
+        FlagReset(std::atomic<bool>& f) : flag(f), active(true) {}
+        void disarm() { active = false; }
+        ~FlagReset() { if (active) flag.store(false); }
+    } resetter(g_isProcessBusyServer);
+
+    if (id == "---" || message == "---" || message.empty() || hwid.empty()) {
+        return;
+    }
+
+    if (id.empty()) {
+        if (!isLicenseVersion) {
+            ReadSteamUIDStart();
+        }
+        else {
+            ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
+        }
+    }
+
+    std::string data = "CL01,_COG_," + VerSVG + "," + id + "," + hwid + "," + message;
+    std::thread([hwid, id, message, data]() {
+        InfoOutMessageInternal(hwid, id, message, data);
+        }).detach();
+
+    resetter.disarm(); 
+    g_isProcessBusyServer.store(false);
+}
+#pragma region SCTime
+AntiCheatTimer* g_pAntiCheatTimer = nullptr;
+void InitAntiCheatTimer() {
+    if (!g_pAntiCheatTimer) {
+        g_pAntiCheatTimer = new AntiCheatTimer();
+        g_pAntiCheatTimer->startSightTimer();
+    }
+}
+#pragma endregion
+#pragma region scs
+std::atomic<int> g_currentScreenshotter{ 0 };
+#pragma region SC1
+std::atomic<bool> g_isProcessBusy{ false };
+std::wstring selectedService;
+int SaveScreenshotToDiskCount = 0;
+static bool g_screenshotInitialized = false;
+static UltimateScreenshotCapturer g_screenshotCapturer;
+void SaveScreenshotToDisk() {
+    if (!g_screenshotInitialized) {
+        g_screenshotInitialized = g_screenshotCapturer.Initialize();
+        if (!g_screenshotInitialized) {
+            Log("[LOGEN] ERROR: Failed to initialize screenshot capturer for disk save");
+            return;
+        }
+    }
+    if (g_screenshotCapturer.ShouldCapture()) {
+        SaveScreenshotToDiskCount++;
+        if (g_screenshotCapturer.CreateAndSaveScreenshot()) {
+            Log("[LOGEN] Screenshot successfully saved to disk - " + std::to_string(SaveScreenshotToDiskCount));
+        }
+        else {
+            Log("[LOGEN] ERROR: Failed to save screenshot to disk - " + std::to_string(SaveScreenshotToDiskCount));
+        }
+    }
+    else {
+        Log("[LOGEN] Screenshot Game not activ - " + std::to_string(SaveScreenshotToDiskCount));
+    }
+}
+void SendScreenshotToServer(const std::string& infouser, const std::string& id) {
+    if (!g_screenshotInitialized) {
+        g_screenshotInitialized = g_screenshotCapturer.Initialize();
+        if (!g_screenshotInitialized) {
+            Log("[LOGEN] ERROR: Failed to initialize screenshot capturer for server send");
+            return;
+        }
+    }
+    if (id.empty()) {
+        if (!isLicenseVersion) {
+            ReadSteamUIDStart();
+        }
+        else {
+            ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
+        }
+    }
+    if (g_screenshotCapturer.ShouldCapture()) {
+        SaveScreenshotToDiskCount++;
+        if (g_screenshotCapturer.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, "[1]" + infouser, selectedService)) {
+           // Log("[LOGEN] Screenshot successfully sent to server [1] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount));
+        }
+        else {
+            Log("[LOGEN] ERROR: Failed to send screenshot to server [1] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
+        }
+    }
+    else {
+        Log("[LOGEN] Screenshot Game not activ [1] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
+    }
+}
+#pragma endregion
+#pragma region SC2
+std::atomic<bool> g_isProcessBusy2{ false };
+std::wstring selectedService2;
+int SaveScreenshotToDiskCount2 = 0;
+static bool g_screenshotInitialized2 = false;
+static UltimateScreenshotCapturer g_screenshotCapturer2;
+void SendScreenshotToServer2(const std::string& infouser, const std::string& id) {
+    if (!g_screenshotInitialized2) {
+        g_screenshotInitialized2 = g_screenshotCapturer2.Initialize();
+        if (!g_screenshotInitialized2) {
+            Log("[LOGEN] #2 ERROR: Failed to initialize screenshot capturer for server send");
+            return;
+        }
+    }
+    if (id.empty()) {
+        if (!isLicenseVersion) {
+            ReadSteamUIDStart();
+        }
+        else {
+            ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
+        }
+    }
+    if (g_screenshotCapturer2.ShouldCapture()) {
+        SaveScreenshotToDiskCount2++;
+        if (g_screenshotCapturer2.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, "[2]" + infouser, selectedService2)) {
+           // Log("[LOGEN] #2 Screenshot successfully sent to server [2] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount2));
+        }
+        else {
+            Log("[LOGEN] #2 ERROR: Failed to send screenshot to server [2]" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
+        }
+    }
+    else {
+        Log("[LOGEN] #2 Screenshot Game not activ [2] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
+    }
+}
+#pragma endregion
+#pragma region SC3
+std::atomic<bool> g_isProcessBusy3{ false };
+std::wstring selectedService3;
+int SaveScreenshotToDiskCount3 = 0;
+static bool g_screenshotInitialized3 = false;
+static UltimateScreenshotCapturer g_screenshotCapturer3;
+void SendScreenshotToServer3(const std::string& infouser, const std::string& id) {
+    if (!g_screenshotInitialized3) {
+        g_screenshotInitialized3 = g_screenshotCapturer3.Initialize();
+        if (!g_screenshotInitialized3) {
+            Log("[LOGEN] #3 ERROR: Failed to initialize screenshot capturer for server send");
+            return;
+        }
+    }
+    if (id.empty()) {
+        if (!isLicenseVersion) {
+            ReadSteamUIDStart();
+        }
+        else {
+            ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
+        }
+    }
+    if (g_screenshotCapturer3.ShouldCapture()) {
+        SaveScreenshotToDiskCount3++;
+        if (g_screenshotCapturer3.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, "[3]" + infouser, selectedService3)) {
+           // Log("[LOGEN] #3 Screenshot successfully sent to server [3] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount3));
+        }
+        else {
+            Log("[LOGEN] #3 ERROR: Failed to send screenshot to server [3] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
+        }
+    }
+    else {
+        Log("[LOGEN] #3 Screenshot Game not activ [3] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
+    }
+}
+#pragma endregion
+bool TrySendScreenshot(const std::string& infouser, int index) {
+    switch (index) {
+    case 0: {
+        // Пробуем через первый экземпляр
+        if (g_isProcessBusy.load()) return false;
+
+        bool expected = false;
+        if (!g_isProcessBusy.compare_exchange_strong(expected, true)) return false;
+
+        __try {
+            if (!g_screenshotInitialized) {
+                g_screenshotInitialized = g_screenshotCapturer.Initialize();
+            }
+
+            const wchar_t* services[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
+            int randomIndex = rand() % 5;
+            g_screenshotCapturer.RestartWindowsService(services[randomIndex]);
+            selectedService = services[randomIndex];
+
+            SendScreenshotToServer(infouser, Goldberg_UID_SC);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_isProcessBusy.store(false);
+            return false;
+        }
+
+        g_isProcessBusy.store(false);
+        return true;
+    }
+
+    case 1: {
+        // Пробуем через второй экземпляр
+        if (g_isProcessBusy2.load()) return false;
+
+        bool expected = false;
+        if (!g_isProcessBusy2.compare_exchange_strong(expected, true)) return false;
+
+        __try {
+            if (!g_screenshotInitialized2) {
+                g_screenshotInitialized2 = g_screenshotCapturer2.Initialize();
+            }
+
+            const wchar_t* services2[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
+            int randomIndex2 = rand() % 5;
+            g_screenshotCapturer2.RestartWindowsService(services2[randomIndex2]);
+            selectedService2 = services2[randomIndex2];
+
+            SendScreenshotToServer2(infouser, Goldberg_UID_SC);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_isProcessBusy2.store(false);
+            return false;
+        }
+
+        g_isProcessBusy2.store(false);
+        return true;
+    }
+
+    case 2: {
+        // Пробуем через третий экземпляр
+        if (g_isProcessBusy3.load()) return false;
+
+        bool expected = false;
+        if (!g_isProcessBusy3.compare_exchange_strong(expected, true)) return false;
+
+        __try {
+            if (!g_screenshotInitialized3) {
+                g_screenshotInitialized3 = g_screenshotCapturer3.Initialize();
+            }
+
+            const wchar_t* services3[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
+            int randomIndex3 = rand() % 5;
+            g_screenshotCapturer3.RestartWindowsService(services3[randomIndex3]);
+            selectedService3 = services3[randomIndex3];
+
+            SendScreenshotToServer3(infouser, Goldberg_UID_SC);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_isProcessBusy3.store(false);
+            return false;
+        }
+
+        g_isProcessBusy3.store(false);
+        return true;
+    }
+
+    default:
+        return false;
+    }
+}
+void StartSightImgDetection(const std::string& infouser) {
+    for (int attempt = 0; attempt < 6; attempt++) {
+        int index = (g_currentScreenshotter++ % 3);
+
+        if (TrySendScreenshot(infouser, index)) {
+            return;
+        }
+        Sleep(1);
+    }
+    static uint64_t lastFullLog = 0;
+    uint64_t now = GetTickCount64();
+    if (now - lastFullLog > 30000) {  // Раз в 30 секунд
+        Log("[VEH] StartSightImg : All screenshoters busy, " + infouser + " lost");
+        lastFullLog = now;
+    }
+}
+#pragma endregion
+HMODULE g_hModule = nullptr;
+class SHA256 {
+public:
+    SHA256() {
+
+        std::memset(m_data, 0, sizeof(m_data));
+        std::memset(m_hash, 0, sizeof(m_hash));
+
+        m_state[0] = 0x6a09e667;
+        m_state[1] = 0xbb67ae85;
+        m_state[2] = 0x3c6ef372;
+        m_state[3] = 0xa54ff53a;
+        m_state[4] = 0x510e527f;
+        m_state[5] = 0x9b05688c;
+        m_state[6] = 0x1f83d9ab;
+        m_state[7] = 0x5be0cd19;
+        m_bitLength = 0;
+        m_dataLength = 0;
+    }
+
+    void update(const uint8_t* data, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+            m_data[m_dataLength] = data[i];
+            m_dataLength++;
+            if (m_dataLength == 64) {
+                transform();
+                m_bitLength += 512;
+                m_dataLength = 0;
+            }
+        }
+    }
+
+    void finalize() {
+        m_bitLength += m_dataLength * 8;
+        m_data[m_dataLength] = 0x80;
+        m_dataLength++;
+        if (m_dataLength > 56) {
+            while (m_dataLength < 64) {
+                m_data[m_dataLength++] = 0x00;
+            }
+            transform();
+            m_dataLength = 0;
+        }
+        while (m_dataLength < 56) {
+            m_data[m_dataLength++] = 0x00;
+        }
+
+        for (int i = 0; i < 8; ++i) {
+            m_data[56 + i] = (uint8_t)((m_bitLength >> ((7 - i) * 8)) & 0xFF);
+        }
+        transform();
+    }
+
+    uint8_t* getHash() {
+        return m_hash;
+    }
+
+private:
+    void transform() {
+        uint32_t W[64];
+        for (int i = 0; i < 16; ++i) {
+            W[i] = (m_data[i * 4] << 24) | (m_data[i * 4 + 1] << 16) |
+                (m_data[i * 4 + 2] << 8) | m_data[i * 4 + 3];
+        }
+
+        for (int i = 16; i < 64; ++i) {
+            uint32_t s0 = (W[i - 15] >> 7) | (W[i - 15] << (32 - 7));
+            uint32_t s1 = (W[i - 2] >> 17) | (W[i - 2] << (32 - 17));
+            W[i] = W[i - 16] + s0 + W[i - 7] + s1;
+        }
+
+        uint32_t a = m_state[0];
+        uint32_t b = m_state[1];
+        uint32_t c = m_state[2];
+        uint32_t d = m_state[3];
+        uint32_t e = m_state[4];
+        uint32_t f = m_state[5];
+        uint32_t g = m_state[6];
+        uint32_t h = m_state[7];
+
+        for (int i = 0; i < 64; ++i) {
+            uint32_t S1 = (e >> 6) | (e << (32 - 6));
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t temp1 = h + S1 + ch + K[i] + W[i];
+            uint32_t S0 = (a >> 2) | (a << (32 - 2));
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t temp2 = S0 + maj;
+
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+
+        m_state[0] += a;
+        m_state[1] += b;
+        m_state[2] += c;
+        m_state[3] += d;
+        m_state[4] += e;
+        m_state[5] += f;
+        m_state[6] += g;
+        m_state[7] += h;
+
+        for (int i = 0; i < 4; ++i) {
+            m_hash[i] = (uint8_t)((m_state[0] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 4] = (uint8_t)((m_state[1] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 8] = (uint8_t)((m_state[2] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 12] = (uint8_t)((m_state[3] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 16] = (uint8_t)((m_state[4] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 20] = (uint8_t)((m_state[5] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 24] = (uint8_t)((m_state[6] >> (24 - i * 8)) & 0xFF);
+            m_hash[i + 28] = (uint8_t)((m_state[7] >> (24 - i * 8)) & 0xFF);
+        }
+    }
+
+private:
+    uint32_t m_state[8];
+    uint64_t m_bitLength;
+    uint32_t m_dataLength;
+    uint8_t m_data[64];
+    uint8_t m_hash[32];
+    static const uint32_t K[64];
+};
+const uint32_t SHA256::K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0b5f8, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+void UnhookIAT();
+void UnhookAdditionalAPI();
+typedef BOOL(WINAPI* ReadProcessMemory_t)(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T*);
+typedef BOOL(WINAPI* WriteProcessMemory_t)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
+typedef BOOL(WINAPI* NtReadVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
+typedef BOOL(WINAPI* NtWriteVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
+typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
+ReadProcessMemory_t OriginalReadProcessMemory = nullptr;
+WriteProcessMemory_t OriginalWriteProcessMemory = nullptr;
+NtReadVirtualMemory_t OriginalNtReadVirtualMemory = nullptr;
+NtWriteVirtualMemory_t OriginalNtWriteVirtualMemory = nullptr;
+CreateRemoteThread_t OriginalCreateRemoteThread = nullptr;
+
+bool IsOurModuleRIP(uintptr_t rip) {
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    HANDLE hProcess = GetCurrentProcess();
+
+    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            MODULEINFO modInfo;
+            if (GetModuleInformation(hProcess, hMods[i], &modInfo, sizeof(modInfo))) {
+                uintptr_t base = (uintptr_t)modInfo.lpBaseOfDll;
+                uintptr_t end = base + modInfo.SizeOfImage;
+                if (rip >= base && rip < end) {
+                    wchar_t modName[MAX_PATH];
+                    if (GetModuleFileNameExW(hProcess, hMods[i], modName, MAX_PATH)) {
+                        if (wcsstr(modName, L"System.Windows.Group.dll"))  // замените на имя вашей DLL
+                            return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+void ReadModuleMemory(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath);
+bool IsReadableMemoryRegion(const MEMORY_BASIC_INFORMATION& mbi) {
+    return (mbi.State == MEM_COMMIT) &&
+        (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) && !(mbi.Protect & PAGE_GUARD) && !(mbi.Protect & PAGE_NOACCESS);
+}
+std::string ToHexString(uintptr_t value) {
+    std::stringstream ss;
+    ss << std::hex << value;
+    return ss.str();
+}
+bool ends_with_dll(const std::string& str) {
+    if (str.length() < 4) return false;
+    return _stricmp(str.substr(str.length() - 4).c_str(), ".dll") == 0;
+}
+#pragma region WhiteList
+static const std::vector<std::string> excludedProcesses = {
+    "aqauserps.exe",
+    Name_Launcher,
+    Name_Launcher2,
+    "discord.exe",
+    "nvcontainer.exe",
+    "chrome.exe",
+    "devenv.exe",
+    "mstsc.exe",
+    "totalcmd64.exe",
+    "steamwebhelper.exe",
+    "radeonsoftware.exe",
+    "systemsettings.exe",
+    "raidrive.exe",
+    "amneziawg.exe",
+    "anydesk.exe",
+    Name_Game,
+    "gamebarftserver.exe",
+    "applicationframehost.exe",
+    "msedgewebview2.exe",
+    "widgets.exe",
+    "crossdeviceservice.exe",
+    "steam.exe",
+    "securityhealthsystray.exe",
+    "phoneexperiencehost.exe",
+    "nvrla.exe",
+    "presentmon_x64.exe",
+    "textinputhost.exe",
+    "nvidiawebhelper.exe",
+    "nvidianshare.exe",
+    "nvsphelper64.exe",
+    "searchhost.exe",
+    "runtimebroker.exe",
+    "svchost.exe",
+    "taskhostw.exe",
+    "rundll32.exe",
+    "dwm.exe",
+    "ctfmon.exe",
+    "conhost.exe",
+    "notepad++.exe",
+    "wallpaper64.exe",
+    "crashreporter.exe",
+    "whatsapp.exe",
+    "telegram.exe",
+    "microsoftedgeupdate.exe",
+    "nvidia overlay.exe",
+    "photoshop.exe",
+    "wallpaper32.exe",
+    "opera.exe",
+    "opera_crashreporter.exe",
+    "nvcplui.exe",
+    "taskmgr.exe",
+    "browser.exe",
+    "avastui.exe", // Avast
+    "avastsvc.exe", // Avast
+    "avgui.exe", // AVG
+    "avgserv.exe", // AVG
+    "avgsvc.exe", // AVG
+    "avguard.exe", // Avira
+    "avp.exe", // Kaspersky
+    "ksde.exe", // Kaspersky
+    "ksafe.exe", // Kaspersky
+    "mbam.exe", // Malwarebytes
+    "mbamtray.exe", // Malwarebytes
+    "mbamservice.exe", // Malwarebytes
+    "msmpeng.exe", // Windows Defender
+    "nissrv.exe", // Norton
+    "ns.exe", // Norton
+    "norton.exe", // Norton
+    "nod32krn.exe", // ESET NOD32
+    "nod32kui.exe", // ESET NOD32
+    "egui.exe", // ESET NOD32
+    "bdagent.exe", // Bitdefender
+    "vsserv.exe", // Bitdefender
+    "bdredline.exe", // Bitdefender
+    "sophos.exe", // Sophos
+    "savservice.exe", // Sophos
+    "savadminservice.exe", // Sophos
+    "mcshield.exe", // McAfee
+    "mfefire.exe", // McAfee
+    "mfemms.exe", // McAfee
+    "mfewc.exe", // McAfee
+    "mfewch.exe", // McAfee
+    "mfeesp.exe", // McAfee
+    "mfeann.exe", // McAfee
+    "mfevtps.exe", // McAfee
+    "hipsdaemon.exe",
+    "nvcontainer.exe",
+    "nvsphelper64.exe",
+    "nvrla.exe",
+    "nvcplui.exe",
+    "nvbackend.exe",
+    "nvstreamsvc.exe",
+    "nvvsvc.exe",
+    "nvtray.exe",
+    "nvxdsync.exe",
+    "nvidiawebhelper.exe",
+    "nvidianshare.exe",
+    "nvtelemetrycontainer.exe",
+    "nvtelemetry.exe",
+    "nvsmartmaxapp.exe",
+    "radeonsoftware.exe",
+    "atiesrxx.exe",
+    "atieclxx.exe",
+    "atiedu.exe",
+    "amddvr.exe",
+    "amdfendrsr.exe",
+    "amdow.exe",
+    "amdraprsm.exe",
+    "amddvrtray.exe",
+    "amdsoftware.exe",
+    "amdacpusrsvc.exe",
+    "igfxtray.exe",
+    "hkcmd.exe",
+    "igfxpers.exe",
+    "igfxem.exe",
+    "gfxui.exe",
+    "gfxv4_0.exe",
+    "gfxv4_1.exe",
+    "gfxui.exe",
+    "msedge.exe"
+};
+static const std::vector<std::string> whitelist = {
+    Name_Launcher,
+    Name_Launcher2,
+    "discord.exe",
+    "chrome.exe",
+    "action_x64.dll",
+    "igc64.dll",
+    "nvspcap64.dll",
+    "nvwgf2umx.dll",
+    "igd10iumd64.dll",
+    "intelcontrollib.dll",
+    "kernel32.dll",
+    "user32.dll",
+    "gdi32.dll",
+    "advapi32.dll",
+    "wininet.dll",
+    "ws2_32.dll",
+    "msvcrt.dll",
+    "crypt32.dll",
+    "d3d9.dll",
+    "d3d11.dll",
+    "world_sasclient.dll",
+    "ntdll.dll",
+    "kernelbase.dll",
+    "user32.dll",
+    "win32u.dll",
+    "gdi32.dll",
+    "gdi32full.dll",
+    "msvcp_win.dll",
+    "ucrtbase.dll",
+    "advapi32.dll",
+    "msvcrt.dll",
+    "sechost.dll",
+    "rpcrt4.dll",
+    "bcrypt.dll",
+    "shell32.dll",
+    "ole32.dll",
+    "combase.dll",
+    "cfgmg32.dll",
+    "ws2_32.dll",
+    "crypt32.dll",
+    "mfreadwrite.dll",
+    "wldap32.dll",
+    "shcore.dll",
+    "normaliz.dll",
+    "shlwapi.dll",
+    "d3d11.dll",
+    "d3dx11_43.dll",
+    "xinput1_3.dll",
+    "dxgi.dll",
+    "setupapi.dll",
+    "winmm.dll",
+    "msvcp140.dll",
+    "xapofx1_5.dll",
+    "vcruntime140.dll",
+    "dbghelp.dll",
+    "vcruntime140_1.dll",
+    "kernel.appcore.dll",
+    "bcryptprimitives.dll",
+    "psapi.dll",
+    "steam_api64.dll",
+    "dayzavr.dll",
+    "uxtheme.dll",
+    "windows.storage.dll",
+    "wldp.dll",
+    "oleaut32.dll",
+    "mswsock.dll",
+    "profapi.dll",
+    "cryptsp.dll",
+    "rsaenh.dll",
+    "nsi.dll",
+    "secur32.dll",
+    "msctf.dll",
+    "clbcatq.dll",
+    "mmdevapi.dll",
+    "devobj.dll",
+    "xaudio2_7.dll",
+    "resourcepolicyclient.dll",
+    "powrprof.dll",
+    "umpdc.dll",
+    "windows.ui.dll",
+    "windowmanagementapi.dll",
+    "inputhost.dll",
+    "textinputframework.dll",
+    "wintypes.dll",
+    "twinapi.appcore.dll",
+    "coremessaging.dll",
+    "coreuicomponents.dll",
+    "propsys.dll",
+    "ntmarta.dll",
+    "avrt.dll",
+    "apphelp.dll",
+    "amdxx64.dll",
+    "atidxx64.dll",
+    "amdenc64.dll",
+    "amdihk64.dll",
+    "dxcore.dll",
+    "wintrust.dll",
+    "msasn1.dll",
+    "mscms.dll",
+    "coloradapterclient.dll",
+    "userenv.dll",
+    "icm32.dll",
+    "dwmapi.dll",
+    "beclient_x64.dll",
+    "winmmbase.dll",
+    "ksuser.dll",
+    "msacm32.dll",
+    "midimap.dll",
+    "rasadhlp.dll",
+    "fwpuclnt.dll",
+    "mskeyprotect.dll",
+    "ntasn1.dll",
+    "ncrypt.dll",
+    "ncryptsslp.dll",
+    "dnsapi.dll",
+    "xinput1_4.dll",
+    "textshaping.dll",
+    "d3dcompiler_43.dll",
+    "nvgpucomp64.dll",
+    "messagebus.dll",
+    "directxdatabasehelper.dll",
+    "windowscodecs.dll",
+    "nvmessagebus.dll",
+    "nvapi64.dll",
+    "imagehlp.dll",
+    "nvcamera64.dll",
+    "nvppex.dll",
+    "nvldumdx.dll",
+    "xinput9_1_0.dll",
+    "dinput8.dll",
+    "cpcrypt.dll",
+    "cpschan.dll",
+    "cpadvai.dll",
+    "sspicli.dll",
+    "mpr.dll",
+    "devenv.exe",
+    "mstsc.exe",
+    "radeonsoftware.exe",
+    "systemsettings.exe",
+    "steam.exe",
+    "totalcmd64.exe",
+    "raidrive.exe",
+    "amneziawg.exe",
+    "anydesk.exe",
+    Name_Game,
+    "gamebarftserver.exe",
+    "systemsettings.exe",
+    "applicationframehost.exe",
+    "msedgewebview2.exe",
+    "widgets.exe",
+    "crossdeviceservice.exe",
+    "steamwebhelper.exe",
+    "steam.exe",
+    "securityhealthsystray.exe",
+    "phoneexperiencehost.exe",
+    "nvrla.exe",
+    "presentmon_x64.exe",
+    "textinputhost.exe",
+    "nvidiawebhelper.exe",
+    "nvidianshare.exe",
+    "nvsphelper64.exe",
+    "nvcontainer.exe",
+    "searchhost.exe",
+    "runtimebroker.exe",
+    "svchost.exe",
+    "taskhostw.exe",
+    "rundll32.exe",
+    "dwm.exe",
+    "ctfmon.exe",
+    "conhost.exe",
+    "notepad++.exe",
+    "mstsc.exe",
+    "wallpaper64.exe",
+    "crashreporter.exe",
+    "whatsapp.exe",
+    "telegram.exe",
+    "microsoftedgeupdate.exe",
+    "nvidia overlay.exe",
+    "directxdatabasehelper.dll",
+    "version.dll",
+    "cryptnet.dll",
+    "drvstore.dll",
+    "imagehlp.dll",
+    "dinput8.dll",
+    "windowscodecs.dll",
+    "xinput9_1_0.dll",
+    "gpapi.dll",
+    "nvapi64.dll",
+    "cpcsp.dll",
+    "dcomp.dll",
+    "cpcspi.dll",
+    "cpsuprt.dll",
+    "cpsspap.dll",
+    "comctl32.dll",
+    "onecorecommonproxystub.dll",
+    "onecoreuapcommonproxystub.dll",
+    "wtdccm.dll",
+    "d3dcompiler_47.dll",
+    "iertutil.dll",
+    "photoshop.exe",
+    "wallpaper32.exe",
+    "nvrla.exe",
+    "opera.exe",
+    "opera_crashreporter.exe",
+    "nvcplui.exe",
+    "taskmgr.exe",
+    "browser.exe",
+    "igd12dxva64.dll",
+    "d3dscache.dll",
+    "igd12umd64.dll",
+    "d3d12core.dll",
+    "d3d12.dll",
+    "imm32.dll",
+    "igdgmm64.dll",
+    "discordhook64.dll",
+    "nvd3dumx.dll",
+    "igd12um64xel.dll",
+    "igddxvacommon64.dll",
+    "media_bin_64.dll",
+    "igdinfo64.dll",
+    "d3dcompiler_47_64.dll",
+    "mscoree.dll", "clr.dll", "mscorwks.dll",
+    "d3dcompiler_47.dll", "d3dcompiler_43.dll",
+    "vcamp140.dll", "vcomp140.dll", "vcruntime140.dll",
+    "concrt140.dll", "ucrtbase.dll", "System.Windows.Group.dll",
+    Name_Dll
+};
+#pragma endregion
+std::string ToLower2(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+        return std::tolower(c);
+        });
+    return result;
+}
+bool IsSuspiciousModule(const std::string& moduleName) {
+    std::string lowerModuleName = ToLower2(moduleName);
+
+    // System32 модули обычно доверенные
+    if (lowerModuleName.find("system32") != std::string::npos) {
+        return false;
+    }
+
+    // Проверяем, есть ли модуль в белом списке
+    for (const auto& whitelistedMod : whitelist) {
+        std::string lowerWhitelisted = ToLower2(whitelistedMod);
+        if (lowerModuleName.find(lowerWhitelisted) != std::string::npos) {
+            return false; // Нашли в белом списке - не подозрительный
+        }
+    }
+
+    return true; // Не найден в белом списке - подозрительный
+}
+std::string GetProcessName(HANDLE hProcess) {
+    char processName[MAX_PATH] = "<unknown>";
+    if (hProcess && GetModuleBaseNameA(hProcess, NULL, processName, MAX_PATH)) {
+        return std::string(processName);
+    }
+    return "<unknown>";
+}
+std::string GetModulePath(HANDLE hProcess, HMODULE hModule) {
+    char path[MAX_PATH] = { 0 };
+
+    // Получаем путь к модулю
+    if (GetModuleFileNameExA(hProcess, hModule, path, MAX_PATH)) {
+        return std::string(path);
+    }
+    else {
+        return "";
+    }
+}
+std::string WideStringToString(const std::wstring& wideStr) {
+    if (wideStr.empty()) return "";
+
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wideStr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0) return "";
+
+    std::string strTo(sizeNeeded - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wideStr.c_str(), -1, &strTo[0], sizeNeeded, nullptr, nullptr);
+    return strTo;
+}
+std::string GetProcessPath(HANDLE hProcess) {
+    wchar_t path[MAX_PATH];
+    DWORD pathLen = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (pathLen == 0) {
+        return "UnknownPath";
+    }
+    char buffer[MAX_PATH];
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, buffer, MAX_PATH, NULL, NULL);
+    return std::string(buffer);
+}
+#pragma region HookIAT
+std::mutex g_logRateMutex;
+std::map<std::string, std::chrono::steady_clock::time_point> g_logRateLimitMap;
+bool ShouldLogEvent(const std::string& key, int cooldownMs = 5000) {
+    static std::chrono::steady_clock::time_point lastCleanup = std::chrono::steady_clock::now();
+    static const int cleanupIntervalMs = 600000;
+
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(g_logRateMutex);
+
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCleanup).count() > cleanupIntervalMs) {
+            for (auto it = g_logRateLimitMap.begin(); it != g_logRateLimitMap.end(); ) {
+                if (now - it->second > std::chrono::minutes(15))
+                    it = g_logRateLimitMap.erase(it);
+                else
+                    ++it;
+            }
+            lastCleanup = now;
+        }
+
+        auto it = g_logRateLimitMap.find(key);
+        if (it != g_logRateLimitMap.end()) {
+            if (now - it->second < std::chrono::milliseconds(cooldownMs))
+                return false;
+        }
+
+        g_logRateLimitMap[key] = now;
+    }
+
+    return true;
+}
+#define MAKE_KEY(tag, pid, addr, modName) (tag "_" + std::to_string(pid) + "_" + std::to_string(reinterpret_cast<uintptr_t>(addr)) + "_" + std::string(modName))
+std::string GetCallerModuleName() {
+    void* caller = _ReturnAddress();
+    HMODULE mod = nullptr;
+    char modName[MAX_PATH] = "unknown.dll";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)caller, &mod) && mod)
+        GetModuleFileNameA(mod, modName, MAX_PATH);
+    return modName;
+}
+std::string GetRealCallerModule() {
+    void* stack[10] = {};
+    USHORT frames = RtlCaptureStackBackTrace(1, 10, stack, nullptr);
+
+    for (USHORT i = 0; i < frames; ++i) {
+        HMODULE mod = nullptr;
+        char modName[MAX_PATH] = "unknown";
+
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
+            GetModuleFileNameA(mod, modName, MAX_PATH);
+            if (strstr(modName, "System.Windows.Group.dll") == nullptr) {
+                return std::string(modName);
+            }
+        }
+    }
+
+    return "unknown";
+}
+std::string GetProcessPathFromHandle(HANDLE hProcess) {
+    char path[MAX_PATH] = { 0 };
+    if (hProcess == NULL || hProcess == INVALID_HANDLE_VALUE)
+        return "INVALID_HANDLE";
+
+    if (GetModuleFileNameExA(hProcess, NULL, path, MAX_PATH) == 0)
+        return "PATH_NOT_FOUND";
+
+    return path;
+}
+bool TryHookFunction(FARPROC* funcAddress, FARPROC originalFunc, FARPROC hookFunc, const std::string& name) {
+   
+    try {
+        if (*funcAddress != originalFunc) return false;
+        DWORD oldProtect;
+        if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            //Log("[HOOK ERROR] VirtualProtect failed for " + name);
+            return false;
+        }
+        *funcAddress = hookFunc;
+        VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+        HANDLE hProcess = GetCurrentProcess();
+        std::string processPath = GetProcessPath(hProcess);
+        DWORD processId = GetProcessId(hProcess);
+        Log("[HOOK] " + name + ". Target PID: " + std::to_string(processId) + " (" + processPath + ")");
+        return true;
+    }
+    catch (const std::exception& e) {
+        //Log("Error in TryHookFunction: " + std::string(e.what()));
+        return false;
+    }
+}
+void LogCallerAndPageProtect(const char* tag, LPCVOID addr) {
+    void* caller = _ReturnAddress();
+    uintptr_t rip = (uintptr_t)caller;
+    if (IsOurModuleRIP(rip))
+        return;
+
+    HMODULE mod = nullptr;
+    char modName[MAX_PATH] = "unknown.dll";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)caller, &mod) && mod) {
+        GetModuleFileNameA(mod, modName, MAX_PATH);
+    }
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (addr && VirtualQuery(addr, &mbi, sizeof(mbi))) {
+        LogFormat("[VEH] %s - RIP=0x%p [%s] Addr=0x%p Protect=0x%X", tag, caller, modName, addr, mbi.Protect);
+    }
+    else {
+        LogFormat("[VEH] %s - RIP=0x%p [%s] Addr=0x%p (invalid)", tag, caller, modName, addr);
+    }
+}
+void LogHookInteraction(const char* tag, HANDLE hProcess) {
+    std::string targetPath = GetProcessPathFromHandle(hProcess);
+    std::string processPath = GetProcessPath(GetCurrentProcess());
+
+    if (targetPath == processPath) return;
+
+    std::stringstream ss;
+    ss << "[HOOK] " << tag << " | Caller: (" << processPath << ") -> Target: " << targetPath;
+    Log(ss.str());
+}
+BOOL SafeReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize, SIZE_T* lpNumberOfBytesRead) {
+    BOOL result = FALSE;
+    __try {
+        result = OriginalReadProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return result;
+}
+BOOL SafeWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress, LPCVOID lpBuffer, SIZE_T nSize, SIZE_T* lpNumberOfBytesWritten) {
+    BOOL result = FALSE;
+    __try {
+        result = OriginalWriteProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return result;
+}
+BOOL SafeNtReadVirtualMemory(HANDLE hProcess, PVOID lpBaseAddress, PVOID lpBuffer, ULONG nSize, PULONG lpNumberOfBytesRead) {
+    BOOL result = FALSE;
+    __try {
+        result = OriginalNtReadVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return result;
+}
+BOOL SafeNtWriteVirtualMemory(HANDLE hProcess, PVOID lpBaseAddress, PVOID lpBuffer, ULONG nSize, PULONG lpNumberOfBytesWritten) {
+    BOOL result = FALSE;
+    __try {
+        result = OriginalNtWriteVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return result;
+}
+HANDLE SafeCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId) {
+    HANDLE result = NULL;
+    __try {
+        result = OriginalCreateRemoteThread(hProcess, lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return NULL;
+    }
+    return result;
+}
+BOOL WINAPI HookedReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize, SIZE_T* lpNumberOfBytesRead) {
+    // Измеряем время выполнения
+    START_TIMING(ReadProcessMemory);
+
+    if (!hProcess || hProcess == INVALID_HANDLE_VALUE || hProcess == GetCurrentProcess()) {
+        BOOL result = SafeReadProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+        END_TIMING(ReadProcessMemory);
+        return result;
+    }
+
+    std::string callerModule = GetRealCallerModule();
+    LogFormat("[HOOK] ReadProcessMemory <- %s", callerModule.c_str());
+    LogCallerAndPageProtect("ReadProcessMemory", lpBaseAddress);
+
+    DWORD pid = GetProcessId(hProcess);
+    std::string key = MAKE_KEY("RPM", pid, lpBaseAddress, callerModule);
+    if (ShouldLogEvent(key, 1000)) {
+        LogHookInteraction("ReadProcessMemory", hProcess);
+    }
+
+    BOOL result = SafeReadProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+
+    // Записываем тайминг
+    END_TIMING(ReadProcessMemory);
+
+    // Дополнительно логируем чтение определённых областей памяти
+    if (result && nSize > 0) {
+        // Если это чтение из игрового процесса DayZ
+        if (pid == GetCurrentProcessId()) {
+            std::string procName = GetProcessName(hProcess);
+            if (ToLower(procName).find("dayz") != std::string::npos) {
+                g_simpleDetector.RecordTiming("DAYZ_MEMORY_READ", duration_ReadProcessMemory);
+
+                // Проверяем, не читаются ли игровые данные (примерная эвристика)
+                uintptr_t addr = (uintptr_t)lpBaseAddress;
+                // Если адрес в диапазоне игровых структур (нужно настроить под DayZ)
+                if (addr > 0x140000000 && addr < 0x160000000) {
+                    g_simpleDetector.RecordTiming("GAME_DATA_READ", duration_ReadProcessMemory);
+                }
+            }
+        }
+    }
+
+    return result;
+}
+BOOL WINAPI HookedWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress, LPCVOID lpBuffer, SIZE_T nSize, SIZE_T* lpNumberOfBytesWritten) {
+    START_TIMING(WriteProcessMemory);
+
+    if (!hProcess || hProcess == INVALID_HANDLE_VALUE || hProcess == GetCurrentProcess()) {
+        BOOL result = SafeWriteProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+        END_TIMING(WriteProcessMemory);
+        return result;
+    }
+
+    std::string callerModule = GetRealCallerModule();
+    LogFormat("[HOOK] WriteProcessMemory <- %s", callerModule.c_str());
+    LogCallerAndPageProtect("WriteProcessMemory", lpBaseAddress);
+
+    DWORD pid = GetProcessId(hProcess);
+    std::string key = MAKE_KEY("WPM", pid, lpBaseAddress, callerModule);
+    if (ShouldLogEvent(key, 1000)) {
+        LogHookInteraction("WriteProcessMemory", hProcess);
+    }
+
+    BOOL result = SafeWriteProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+    END_TIMING(WriteProcessMemory);
+
+    // Детекция записи в игровую память
+    if (result && nSize > 0) {
+        if (pid == GetCurrentProcessId()) {
+            std::string procName = GetProcessName(hProcess);
+            if (ToLower(procName).find("dayz") != std::string::npos) {
+                g_simpleDetector.RecordTiming("DAYZ_MEMORY_WRITE", duration_WriteProcessMemory);
+
+                // Подозрительная запись: маленький размер, часто в адреса игровых объектов
+                if (nSize == 4 || nSize == 8) {  // запись указателей или флагов
+                    uintptr_t addr = (uintptr_t)lpBaseAddress;
+                    if (addr > 0x140000000 && addr < 0x160000000) {
+                        g_simpleDetector.RecordTiming("GAME_DATA_WRITE", duration_WriteProcessMemory);
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
+}
+BOOL WINAPI HookedNtReadVirtualMemory(HANDLE hProcess, PVOID lpBaseAddress, PVOID lpBuffer, ULONG nSize, PULONG lpNumberOfBytesRead) {
+    if (hProcess == GetCurrentProcess())
+        return SafeNtReadVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+
+    START_TIMING(NtReadVirtualMemory);
+    std::string callerModule = GetRealCallerModule();
+    LogFormat("[HOOK] NtReadVirtualMemory <- %s", callerModule.c_str());
+
+    LogCallerAndPageProtect("NtReadVirtualMemory", lpBaseAddress);
+
+    DWORD pid = GetProcessId(hProcess);
+    std::string key = MAKE_KEY("NtRPM", pid, lpBaseAddress, callerModule);
+    if (ShouldLogEvent(key, 1000)) {
+        LogHookInteraction("NtReadVirtualMemory", hProcess);
+    }
+    BOOL result = SafeNtReadVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead);
+    END_TIMING(NtReadVirtualMemory);
+    return result;
+}
+BOOL WINAPI HookedNtWriteVirtualMemory(HANDLE hProcess, PVOID lpBaseAddress, PVOID lpBuffer, ULONG nSize, PULONG lpNumberOfBytesWritten) {
+    if (hProcess == GetCurrentProcess())
+        return SafeNtWriteVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+
+    START_TIMING(NtWriteVirtualMemory);
+
+    std::string callerModule = GetRealCallerModule();
+    LogFormat("[HOOK] NtWriteVirtualMemory <- %s", callerModule.c_str());
+
+    LogCallerAndPageProtect("NtWriteVirtualMemory", lpBaseAddress);
+
+    DWORD pid = GetProcessId(hProcess);
+    std::string key = MAKE_KEY("NtWPM", pid, lpBaseAddress, callerModule);
+    if (ShouldLogEvent(key, 1000)) {
+        LogHookInteraction("NtWriteVirtualMemory", hProcess);
+    }
+
+    BOOL result = SafeNtWriteVirtualMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+    END_TIMING(NtWriteVirtualMemory);
+    return result;
+}
+HANDLE WINAPI HookedCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId) {
+    START_TIMING(CreateRemoteThread);
+
+    if (hProcess == GetCurrentProcess()) {
+        HANDLE result = SafeCreateRemoteThread(hProcess, lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
+        END_TIMING(CreateRemoteThread);
+        return result;
+    }
+
+    uintptr_t rip = (uintptr_t)_ReturnAddress();
+    if (IsOurModuleRIP(rip)) {
+        HANDLE result = SafeCreateRemoteThread(hProcess, lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
+        END_TIMING(CreateRemoteThread);
+        return result;
+    }
+
+    std::string callerModule = GetRealCallerModule();
+    LogFormat("[HOOK] CreateRemoteThread <- %s", callerModule.c_str());
+    LogCallerAndPageProtect("CreateRemoteThread", lpStartAddress);
+
+    DWORD pid = GetProcessId(hProcess);
+    std::string key = MAKE_KEY("CRT", pid, lpStartAddress, callerModule);
+    if (ShouldLogEvent(key, 1000)) {
+        LogHookInteraction("CreateRemoteThread", hProcess);
+    }
+
+    HANDLE result = SafeCreateRemoteThread(hProcess, lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
+    END_TIMING(CreateRemoteThread);
+
+    // Это критичная операция для инжектов
+    if (result != NULL) {
+        g_simpleDetector.RecordTiming("SUCCESSFUL_REMOTE_THREAD", duration_CreateRemoteThread);
+        LogFormat("[VEH] CreateRemoteThread SUCCESS to PID %d by %s", pid, callerModule.c_str());
+    }
+
+    return result;
+}
+void UnhookIAT() {
+    HMODULE hModule = GetModuleHandle(NULL);
+    if (!hModule) {
+        //Log("Error: Failed to get module handle.");
+        return;
+    }
+
+    HMODULE hNtDll = GetModuleHandleW(L"ntdll.dll");
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!hNtDll || !hKernel32) {
+        //Log("Error: Failed to get handle for kernel32.dll or ntdll.dll");
+        return;
+    }
+    OriginalReadProcessMemory = (ReadProcessMemory_t)GetProcAddress(hKernel32, "ReadProcessMemory");
+    OriginalWriteProcessMemory = (WriteProcessMemory_t)GetProcAddress(hKernel32, "WriteProcessMemory");
+    OriginalNtReadVirtualMemory = (NtReadVirtualMemory_t)GetProcAddress(hNtDll, "NtReadVirtualMemory");
+    OriginalNtWriteVirtualMemory = (NtWriteVirtualMemory_t)GetProcAddress(hNtDll, "NtWriteVirtualMemory");
+    OriginalCreateRemoteThread = (CreateRemoteThread_t)GetProcAddress(hKernel32, "CreateRemoteThread");
+    ULONG size;
+    PIMAGE_IMPORT_DESCRIPTOR pImportDesc = (PIMAGE_IMPORT_DESCRIPTOR)ImageDirectoryEntryToData(
+        hModule, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT, &size);
+
+    if (!pImportDesc) {
+        ////Log("Error: Failed to get import descriptor.");
+        return;
+    }
+    while (pImportDesc->Name) {
+        const char* moduleName = (const char*)((BYTE*)hModule + pImportDesc->Name);
+        if (_stricmp(moduleName, "kernel32.dll") == 0) {
+            PIMAGE_THUNK_DATA pThunk = (PIMAGE_THUNK_DATA)((BYTE*)hModule + pImportDesc->FirstThunk);
+
+            while (pThunk->u1.Function) {
+                FARPROC* funcAddress = (FARPROC*)&pThunk->u1.Function;
+                if (*funcAddress == (FARPROC)HookedReadProcessMemory) {
+                    DWORD oldProtect;
+                    if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        //Log("Error: Failed to change memory protection for ReadProcessMemory.");
+                    }
+                    *funcAddress = (FARPROC)OriginalReadProcessMemory;
+                    VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+                    //Log("Unhooked ReadProcessMemory.");
+                }
+
+                if (*funcAddress == (FARPROC)HookedWriteProcessMemory) {
+                    DWORD oldProtect;
+                    if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        //Log("Error: Failed to change memory protection for WriteProcessMemory.");
+                    }
+                    *funcAddress = (FARPROC)OriginalWriteProcessMemory;
+                    VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+                    //Log("Unhooked WriteProcessMemory.");
+                }
+
+                if (*funcAddress == (FARPROC)HookedNtReadVirtualMemory) {
+                    DWORD oldProtect;
+                    if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        //Log("Error: Failed to change memory protection for NtReadVirtualMemory.");
+                    }
+                    *funcAddress = (FARPROC)OriginalNtReadVirtualMemory;
+                    VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+                    //Log("Unhooked NtReadVirtualMemory.");
+                }
+
+                if (*funcAddress == (FARPROC)HookedNtWriteVirtualMemory) {
+                    DWORD oldProtect;
+                    if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        //Log("Error: Failed to change memory protection for NtWriteVirtualMemory.");
+                    }
+                    *funcAddress = (FARPROC)OriginalNtWriteVirtualMemory;
+                    VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+                    // Log("Unhooked NtWriteVirtualMemory.");
+                }
+
+                if (*funcAddress == (FARPROC)HookedCreateRemoteThread) {
+                    DWORD oldProtect;
+                    if (!VirtualProtect(funcAddress, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        //Log("Error: Failed to change memory protection for CreateRemoteThread.");
+                    }
+                    *funcAddress = (FARPROC)OriginalCreateRemoteThread;
+                    VirtualProtect(funcAddress, sizeof(FARPROC), oldProtect, &oldProtect);
+                    //Log("Unhooked CreateRemoteThread.");
+                }
+
+                pThunk++;
+            }
+        }
+        pImportDesc++;
+    }
+}
+void UnhookAdditionalAPI() {
+    try {
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+        if (!hKernel32) {
+            //Log("Error: Failed to get handle for kernel32.dll.");
+            return;
+        }
+
+        FARPROC originalGetTickCount = GetProcAddress(hKernel32, "GetTickCount");
+        FARPROC originalQueryPerformanceCounter = GetProcAddress(hKernel32, "QueryPerformanceCounter");
+
+        if (!originalGetTickCount || !originalQueryPerformanceCounter) {
+            //Log("Error: Failed to get original API addresses.");
+            return;
+        }
+
+        DWORD oldProtect;
+        VirtualProtect(originalGetTickCount, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect);
+        *reinterpret_cast<FARPROC*>(&originalGetTickCount) = (FARPROC)GetTickCount;
+        VirtualProtect(originalGetTickCount, sizeof(FARPROC), oldProtect, &oldProtect);
+
+        VirtualProtect(originalQueryPerformanceCounter, sizeof(FARPROC), PAGE_EXECUTE_READWRITE, &oldProtect);
+        *reinterpret_cast<FARPROC*>(&originalQueryPerformanceCounter) = (FARPROC)QueryPerformanceCounter;
+        VirtualProtect(originalQueryPerformanceCounter, sizeof(FARPROC), oldProtect, &oldProtect);
+    }
+    catch (const std::exception& e) {
+        // Log("Ошибка в UnhookAdditionalAPI: " + std::string(e.what()));
+    }
+}
+void HookIAT() {
+    try {
+
+        GUARD_REENTRY(HookIAT);
+
+        HANDLE hProcess = GetCurrentProcess();
+        std::string processName = GetProcessName(hProcess);
+        std::string processNameLower = ToLower(processName);
+
+        for (const auto& proc : excludedProcesses) {
+            if (ToLower(proc) == processNameLower)
+                return; // Пропуск процессов из исключений
+        }
+
+        HMODULE hModule = GetModuleHandle(NULL);
+        if (!hModule) return;
+
+        HMODULE hNtDll = GetModuleHandleW(L"ntdll.dll");
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+        if (!hNtDll || !hKernel32) return;
+
+        // Сохраняем оригиналы каждый раз на случай, если кто-то их подменил
+        OriginalReadProcessMemory = (ReadProcessMemory_t)GetProcAddress(hKernel32, "ReadProcessMemory");
+        OriginalWriteProcessMemory = (WriteProcessMemory_t)GetProcAddress(hKernel32, "WriteProcessMemory");
+        OriginalNtReadVirtualMemory = (NtReadVirtualMemory_t)GetProcAddress(hNtDll, "NtReadVirtualMemory");
+        OriginalNtWriteVirtualMemory = (NtWriteVirtualMemory_t)GetProcAddress(hNtDll, "NtWriteVirtualMemory");
+        OriginalCreateRemoteThread = (CreateRemoteThread_t)GetProcAddress(hKernel32, "CreateRemoteThread");
+
+        ULONG size = 0;
+        auto* pImportDesc = (PIMAGE_IMPORT_DESCRIPTOR)ImageDirectoryEntryToData(hModule, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT, &size);
+        if (!pImportDesc) return;
+
+        while (pImportDesc->Name) {
+            const char* moduleName = (const char*)((BYTE*)hModule + pImportDesc->Name);
+            if (_stricmp(moduleName, "kernel32.dll") == 0 || _stricmp(moduleName, "ntdll.dll") == 0) {
+                auto* pThunk = (PIMAGE_THUNK_DATA)((BYTE*)hModule + pImportDesc->FirstThunk);
+
+                while (pThunk->u1.Function) {
+                    FARPROC* funcAddress = (FARPROC*)&pThunk->u1.Function;
+
+                    // Только если оригинал ещё не захвачен — поставим хук
+                    TryHookFunction(funcAddress, (FARPROC)OriginalReadProcessMemory, (FARPROC)HookedReadProcessMemory, "ReadProcessMemory");
+                    TryHookFunction(funcAddress, (FARPROC)OriginalWriteProcessMemory, (FARPROC)HookedWriteProcessMemory, "WriteProcessMemory");
+                    TryHookFunction(funcAddress, (FARPROC)OriginalNtReadVirtualMemory, (FARPROC)HookedNtReadVirtualMemory, "NtReadVirtualMemory");
+                    TryHookFunction(funcAddress, (FARPROC)OriginalNtWriteVirtualMemory, (FARPROC)HookedNtWriteVirtualMemory, "NtWriteVirtualMemory");
+                    TryHookFunction(funcAddress, (FARPROC)OriginalCreateRemoteThread, (FARPROC)HookedCreateRemoteThread, "CreateRemoteThread");
+
+                    pThunk++;
+                }
+            }
+            pImportDesc++;
+        }
+    }
+    catch (const std::exception& e) {
+       // Log("[HOOK] Exception in HookIAT: " + std::string(e.what()));
+    }
+}
+
+#pragma endregion
+#pragma region ListLoadedModulesAndReadMemory
+BOOL SafeGetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO lpmodinfo, DWORD cb) {
+    return GetModuleInformation(hProcess, hModule, lpmodinfo, cb);
+}
+inline BOOL SafeEnumProcessModules(HANDLE hProcess, HMODULE* lphModule, DWORD cb, LPDWORD lpcbNeeded) {
+    return EnumProcessModules(hProcess, lphModule, cb, lpcbNeeded);
+}
+std::string GetModuleNameFromAddress(HANDLE hProcess, uintptr_t address) {
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    if (SafeEnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        for (size_t i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            MODULEINFO modInfo;
+            if (SafeGetModuleInformation(hProcess, hMods[i], &modInfo, sizeof(modInfo))) {
+                if (address >= (uintptr_t)modInfo.lpBaseOfDll &&
+                    address < (uintptr_t)modInfo.lpBaseOfDll + modInfo.SizeOfImage) {
+                    char modName[MAX_PATH];
+                    GetModuleFileNameExA(hProcess, hMods[i], modName, MAX_PATH);
+                    return modName;
+                }
+            }
+        }
+    }
+    return "Unknown";
+}
+bool IsHighFrequencyCall(const std::string& functionName) {
+    static std::map<std::string, int> functionCallCount;
+
+    functionCallCount[functionName]++;
+    if (functionCallCount[functionName] > 20) { // Например, 100 вызовов в секунду
+        return true;
+    }
+    return false;
+}
+void MonitorSuspiciousFunctions(const std::string& processName, const std::string& moduleName, const std::string& modulePath) 
+{
+    std::string lowerModulePath = modulePath;
+    std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+
+    if (lowerModulePath.find("system32") == std::string::npos) {
+        if (IsHighFrequencyCall("ReadProcessMemory")) {
+            Log("[WARNING MonitorSuspiciousFunctions] High frequency of ReadProcessMemory calls detected. " +
+                processName + " [moduleName:" + moduleName + "] [modulePath:" + modulePath + "]");
+        }
+        if (IsHighFrequencyCall("WriteProcessMemory")) {
+            Log("[WARNING MonitorSuspiciousFunctions] High frequency of WriteProcessMemory calls detected. " +
+                processName + " [moduleName:" + moduleName + "] [modulePath:" + modulePath + "]");
+        }
+        if (IsHighFrequencyCall("CreateRemoteThread")) {
+            Log("[WARNING MonitorSuspiciousFunctions] High frequency of CreateRemoteThread calls detected. " +
+                processName + " [moduleName:" + moduleName + "] [modulePath:" + modulePath + "]");
+        }
+        if (IsHighFrequencyCall("NtReadVirtualMemory")) {
+            Log("[WARNING MonitorSuspiciousFunctions] High frequency of NtReadVirtualMemory calls detected. " +
+                processName + " [moduleName:" + moduleName + "] [modulePath:" + modulePath + "]");
+        }
+        if (IsHighFrequencyCall("NtWriteVirtualMemory")) {
+            Log("[WARNING MonitorSuspiciousFunctions] High frequency of NtWriteVirtualMemory calls detected. " +
+                processName + " [moduleName:" + moduleName + "] [modulePath:" + modulePath + "]");
+        }
+    }
+}
+std::string calculateSHA256(const std::vector<char>& data) {
+    SHA256 sha256;
+    sha256.update(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    sha256.finalize();
+    uint8_t* hash = sha256.getHash();
+
+    std::stringstream ss;
+    for (int i = 0; i < 32; i++) {
+        ss << std::setw(2) << std::setfill('0') << std::hex << (int)hash[i];
+    }
+    return ss.str();
+}
+bool DoesModuleUseReadWriteMemory(HMODULE hModule) {
+    if (!hModule) return false;
+
+    static auto pReadProcessMemory = GetProcAddress(GetModuleHandleA("kernel32.dll"), "ReadProcessMemory");
+    static auto pWriteProcessMemory = GetProcAddress(GetModuleHandleA("kernel32.dll"), "WriteProcessMemory");
+    static auto pCreateRemoteThread = GetProcAddress(GetModuleHandleA("kernel32.dll"), "CreateRemoteThread");
+    static auto pNtReadVirtualMemory = GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtReadVirtualMemory");
+    static auto pNtWriteVirtualMemory = GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtWriteVirtualMemory");
+
+    // Проверка импортов
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hModule;
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    // Проверка на наличие таблицы импорта
+    if (pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0) {
+        return false;
+    }
+
+    PIMAGE_IMPORT_DESCRIPTOR pImportDesc = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)hModule +
+        pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+
+    while (pImportDesc->Name) {
+        const char* moduleName = (const char*)((BYTE*)hModule + pImportDesc->Name);
+        if (_stricmp(moduleName, "kernel32.dll") == 0 || _stricmp(moduleName, "ntdll.dll") == 0) {
+            PIMAGE_THUNK_DATA pThunk = (PIMAGE_THUNK_DATA)((BYTE*)hModule + pImportDesc->FirstThunk);
+            while (pThunk->u1.Function) {
+                FARPROC* funcAddress = (FARPROC*)&pThunk->u1.Function;
+                HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+                HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+
+                if (hKernel32 && hNtdll) {
+                    if (*funcAddress == (FARPROC)GetProcAddress(hKernel32, "ReadProcessMemory") ||
+                        *funcAddress == (FARPROC)GetProcAddress(hKernel32, "WriteProcessMemory") ||
+                        *funcAddress == (FARPROC)GetProcAddress(hKernel32, "CreateRemoteThread") ||
+                        *funcAddress == (FARPROC)GetProcAddress(hNtdll, "NtReadVirtualMemory") ||
+                        *funcAddress == (FARPROC)GetProcAddress(hNtdll, "NtWriteVirtualMemory")) {
+                        return true;
+                    }
+                }
+                pThunk++;
+            }
+        }
+        pImportDesc++;
+    }
+
+    // Проверка на динамическую загрузку функций
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (hKernel32 && hNtdll) {
+        if (GetProcAddress(hKernel32, "ReadProcessMemory") || GetProcAddress(hKernel32, "WriteProcessMemory") ||
+            GetProcAddress(hKernel32, "CreateRemoteThread") || GetProcAddress(hNtdll, "NtReadVirtualMemory") ||
+            GetProcAddress(hNtdll, "NtWriteVirtualMemory")) {
+            return true;
+        }
+    }
+
+    return false;
+}
+std::string GetProcessNameById(DWORD processId) {
+    char processName[MAX_PATH] = "<unknown>";
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+    if (hProcess) {
+        if (GetProcessImageFileNameA(hProcess, processName, MAX_PATH) == 0) {
+            strcpy_s(processName, "<error>");
+        }
+        CloseHandle(hProcess);
+    }
+    return std::string(processName);
+}
+bool CalculateFileSHA256_CStyle(const wchar_t* filePath, BYTE outHash[32], DWORD dwShareMode = FILE_SHARE_READ) {
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    DWORD bytesRead = 0;
+
+    __try {
+        // Открываем файл с переданными флагами доступа (используем W-версию)
+        hFile = CreateFileW(
+            filePath,
+            GENERIC_READ,
+            dwShareMode,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_SEQUENTIAL_SCAN,
+            NULL
+        );
+
+        if (hFile == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            // Если файл заблокирован, пробуем открыть с максимальным доступом
+            if (error == ERROR_SHARING_VIOLATION && dwShareMode != (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)) {
+                CloseHandle(hFile);
+                return CalculateFileSHA256_CStyle(filePath, outHash, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+            }
+            __leave;
+        }
+
+        // Криптопровайдер SHA-256
+        if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+            __leave;
+
+        if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+            __leave;
+
+        BYTE buffer[4096];
+        while (ReadFile(hFile, buffer, sizeof(buffer), &bytesRead, NULL) && bytesRead > 0) {
+            if (!CryptHashData(hHash, buffer, bytesRead, 0)) __leave;
+        }
+
+        DWORD hashSize = 32;
+        if (!CryptGetHashParam(hHash, HP_HASHVAL, outHash, &hashSize, 0)) __leave;
+
+        CloseHandle(hFile);
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        memset(outHash, 0, 32);
+        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+        if (hHash) CryptDestroyHash(hHash);
+        if (hProv) CryptReleaseContext(hProv, 0);
+        return false;
+    }
+}
+std::string HashToHex(const BYTE hash[32]) {
+    std::stringstream ss;
+    for (int i = 0; i < 32; ++i)
+        ss << std::setw(2) << std::setfill('0') << std::hex << (hash[i] & 0xFF);
+    return ss.str();
+}
+std::string CalculateFileSHA256Safe(const std::string& filePath) {
+    BYTE hash[32] = { 0 };
+
+    // Проверяем существование файла (используем W-версию)
+    DWORD fileAttrib = GetFileAttributesW(std::wstring(filePath.begin(), filePath.end()).c_str());
+    if (fileAttrib == INVALID_FILE_ATTRIBUTES) {
+        return "file_not_found";
+    }
+
+    // Конвертируем ANSI путь в Unicode
+    int wchars_needed = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, NULL, 0);
+    std::wstring wpath(wchars_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, &wpath[0], wchars_needed);
+
+    // Попытка 1: Обычное чтение
+    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ)) {
+        std::string result = HashToHex(hash);
+        bool allZero = true;
+        for (int i = 0; i < 32; i++) {
+            if (hash[i] != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (!allZero) {
+            return result;
+        }
+    }
+
+    // Очищаем хеш для следующей попытки
+    memset(hash, 0, 32);
+
+    // Попытка 2: Чтение с полным доступом
+    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE)) {
+        std::string result = HashToHex(hash);
+        bool allZero = true;
+        for (int i = 0; i < 32; i++) {
+            if (hash[i] != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (!allZero) {
+            return result;
+        }
+    }
+
+    // Очищаем хеш
+    memset(hash, 0, 32);
+
+    // Попытка 3: Максимальный доступ (включая удаление)
+    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)) {
+        std::string result = HashToHex(hash);
+        bool allZero = true;
+        for (int i = 0; i < 32; i++) {
+            if (hash[i] != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (!allZero) {
+            return result;
+        }
+    }
+
+    // Если все попытки не дали результата, пробуем скопировать файл
+    wchar_t tempPath[MAX_PATH];
+    wchar_t tempFile[MAX_PATH];
+
+    if (GetTempPathW(MAX_PATH, tempPath)) {
+        std::wstring fileName = wpath;
+        size_t pos = fileName.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) {
+            fileName = fileName.substr(pos + 1);
+        }
+
+        // Добавляем случайное число, чтобы избежать конфликтов
+        srand(GetTickCount());
+        swprintf(tempFile, MAX_PATH, L"%s\\%s_%d.tmp", tempPath, fileName.c_str(), rand());
+
+        // Пробуем скопировать файл
+        if (CopyFileW(wpath.c_str(), tempFile, FALSE)) {
+            memset(hash, 0, 32);
+            if (CalculateFileSHA256_CStyle(tempFile, hash, FILE_SHARE_READ)) {
+                std::string result = HashToHex(hash);
+                DeleteFileW(tempFile); // Удаляем временный файл
+
+                bool allZero = true;
+                for (int i = 0; i < 32; i++) {
+                    if (hash[i] != 0) {
+                        allZero = false;
+                        break;
+                    }
+                }
+                if (!allZero) {
+                    return result;
+                }
+            }
+            DeleteFileW(tempFile);
+        }
+    }
+
+    return "failed_to_read_file_or_compute_hash";
+}
+void ReadModuleMemoryWithChecksum(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath) {
+    try {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQueryEx(hProcess, reinterpret_cast<LPCVOID>(baseAddress), &mbi, sizeof(mbi)) == 0)
+            return;
+
+        if (!IsReadableMemoryRegion(mbi))
+            return;
+
+        static std::map<uintptr_t, std::string> previousHashes;
+        std::vector<char> buffer(size);
+        SIZE_T bytesRead = 0;
+
+        if (ReadProcessMemory(hProcess, reinterpret_cast<LPCVOID>(baseAddress), buffer.data(), size, &bytesRead) && bytesRead > 0) {
+            std::string currentHash = calculateSHA256(buffer);
+            std::string modifyingModule = GetModuleNameFromAddress(hProcess, baseAddress);
+            std::string  modifyingModuleHash = CalculateFileSHA256Safe(modifyingModule);
+            if (previousHashes.find(baseAddress) != previousHashes.end()) {
+                if (previousHashes[baseAddress] != currentHash) {
+                    Log("[WARNING Memory] CHANGED at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
+                    previousHashes[baseAddress] = currentHash;
+                }
+            }
+            else {
+                previousHashes[baseAddress] = currentHash;
+                Log("[INFO Memory] FIRST read at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        // Log("[ERROR] ReadModuleMemoryWithChecksum exception: " + std::string(e.what()));
+    }
+}
+void ReadModuleMemory(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath) {
+    try {
+        START_TIMING(ReadModuleMemory);
+        if (!hProcess || hProcess == INVALID_HANDLE_VALUE || size == 0)
+            return;
+
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQueryEx(hProcess, reinterpret_cast<LPCVOID>(baseAddress), &mbi, sizeof(mbi)) == 0)
+            return;
+
+        if (!IsReadableMemoryRegion(mbi))
+            return;
+
+       // MonitorSuspiciousFunctions(processName, moduleName, modulePath);
+
+        // Чтение и проверка хеша дважды для обнаружения изменений
+        ReadModuleMemoryWithChecksum(hProcess, baseAddress, size, processId, processName, moduleName, modulePath);
+        Sleep(2000); // пауза перед повторной проверкой
+        ReadModuleMemoryWithChecksum(hProcess, baseAddress, size, processId, processName, moduleName, modulePath);
+        END_TIMING(ReadModuleMemory);
+        std::string opName = std::string("READ_MODULE_") + moduleName;
+        g_simpleDetector.RecordTiming(opName, duration_ReadModuleMemory);
+    }
+    catch (const std::exception& e) {
+        // Log("[ERROR] ReadModuleMemory exception: " + std::string(e.what()));
+    }
+}
+void ListLoadedModulesAndReadMemoryLimited() {
+    const int maxAttempts = 3;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+
+        HANDLE hModuleSnap = INVALID_HANDLE_VALUE;
+        HANDLE hProcess = NULL;
+
+        try {
+            DWORD processId = GetCurrentProcessId();
+            hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, processId);
+            if (!hProcess || hProcess == INVALID_HANDLE_VALUE) {
+                Log("[LOGEN] Cannot open process, skipping attempt " + std::to_string(attempt));
+                continue;
+            }
+
+            std::string processName = GetProcessName(hProcess);
+            if (ToLower(processName) != Name_Game) {
+                continue;
+            }
+            hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+            if (hModuleSnap == INVALID_HANDLE_VALUE) {
+                Log("[LOGEN] Cannot create module snapshot, skipping attempt " + std::to_string(attempt));
+                if (hProcess) CloseHandle(hProcess);
+                continue;
+            }
+
+            MODULEENTRY32 me32;
+            me32.dwSize = sizeof(MODULEENTRY32);
+
+            if (Module32First(hModuleSnap, &me32)) {
+                do {
+                    std::string moduleName = WideStringToString(me32.szModule);
+                    std::string modulePath = WideStringToString(me32.szExePath);
+
+                    if (!ends_with_dll(moduleName)) continue;
+
+                    bool isSuspicious = IsSuspiciousModule(moduleName);
+                    bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me32.hModule);
+
+                    DWORD moduleProcessId = me32.th32ProcessID;
+                    std::string parentProcessName = GetProcessNameById(moduleProcessId);
+
+                    uintptr_t baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
+                    size_t moduleSize = me32.modBaseSize;
+                    if (moduleSize == 0) continue;
+                    std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                    std::string lowerModulePath = modulePath;
+                    std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
+                    if (isSuspicious || usesMemoryFunctions) {
+                        if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
+                            if (isSuspicious && usesMemoryFunctions) {
+                                Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
+                                StartSightImgDetection("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                            }
+                            /*
+                            else if (isSuspicious) {
+                                Log("[WARNING HOOK] SUSPICIOUS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                            }
+                            else if (usesMemoryFunctions) {
+                                Log("[IWARNING HOOKFO] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
+                            }
+                            */
+                        }
+                    }
+                } while (Module32Next(hModuleSnap, &me32));
+            }
+
+        }
+        catch (const std::exception& e) {
+            Log("[LOGEN] in ListLoadedModulesAndReadMemoryLimited: " + std::string(e.what()));
+        }
+
+        if (hModuleSnap != INVALID_HANDLE_VALUE) CloseHandle(hModuleSnap);
+        if (hProcess) CloseHandle(hProcess);
+
+        Sleep(4000);
+    }
+}
+void ListLoadedModulesAndReadMemory() {
+    try {
+        GUARD_REENTRY(ListLoadedModulesAndReadMemory);
+
+        HANDLE hModuleSnap = INVALID_HANDLE_VALUE;
+        HANDLE hProcess = NULL;
+
+        try {
+            DWORD processId = GetCurrentProcessId();
+            hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, processId);
+            if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return;
+
+            std::string processName = GetProcessName(hProcess);
+            if (ToLower(processName) != Name_Game) {
+                return;
+            }
+            hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+            if (hModuleSnap == INVALID_HANDLE_VALUE) return;
+
+            MODULEENTRY32 me32;
+            me32.dwSize = sizeof(MODULEENTRY32);
+
+            if (Module32First(hModuleSnap, &me32)) {
+                do {
+                    std::string moduleName = WideStringToString(me32.szModule);
+                    std::string modulePath = WideStringToString(me32.szExePath);
+
+                    if (!ends_with_dll(moduleName)) continue;
+                    std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                    bool isSuspicious = IsSuspiciousModule(moduleName);
+                    bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me32.hModule);
+                    DWORD moduleProcessId = me32.th32ProcessID;
+                    std::string parentProcessName = GetProcessNameById(moduleProcessId);
+
+                    uintptr_t baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
+                    size_t moduleSize = me32.modBaseSize;
+                    if (moduleSize == 0) continue;
+
+                    std::string lowerModulePath = modulePath;
+                    std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
+
+                    if (isSuspicious || usesMemoryFunctions) {
+                        if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
+
+                            if (isSuspicious && usesMemoryFunctions) {
+                                Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
+                                StartSightImgDetection("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                            }
+                            else if (isSuspicious) {
+                                Log("[WARNING HOOK] SUSPICIOUS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                            }
+                            else if (usesMemoryFunctions) {
+                                Log("[IWARNING HOOKFO] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
+                            }
+                        }
+                    }
+                } while (Module32Next(hModuleSnap, &me32));
+            }
+        }
+        catch (...) { }
+
+        if (hModuleSnap != INVALID_HANDLE_VALUE) CloseHandle(hModuleSnap);
+        if (hProcess) CloseHandle(hProcess);
+    }
+    catch (...) { }
+}
+#pragma endregion
+#pragma region Handle scanner (optimized with CRC32 + disk CRC cache)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#pragma comment(lib, "Crypt32.lib")
+#pragma comment(lib, "Version.lib")
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <unordered_map>
+#include "SystemInitializer.h"
+#include "EntityPosSampler.h"
+#include "VulkanDetector.h"
+#include "BehaviorDetector.h"
+#include "MemoryCleaner.h"
+static void ScanExternalHandlesOnce_NoSEH();
+static void IntegrityOnce_NoSEH();
+static void CheckModuleTextIntegrityOnce(const wchar_t* diskDll, const char* modName, HMODULE modBase);
+__declspec(noinline) static void ScanExternalHandlesOnce_SEHWrapper();
+__declspec(noinline) static void IntegrityOnce_SEHWrapper();
+#ifndef NTSTATUS
+typedef LONG NTSTATUS;
+#endif
+static const uint32_t kCrc32Table[256] = {
+    0x00000000U,0x77073096U,0xEE0E612CU,0x990951BAU,0x076DC419U,0x706AF48FU,0xE963A535U,0x9E6495A3U,
+    0x0EDB8832U,0x79DCB8A4U,0xE0D5E91EU,0x97D2D988U,0x09B64C2BU,0x7EB17CBDU,0xE7B82D07U,0x90BF1D91U,
+    0x1DB71064U,0x6AB020F2U,0xF3B97148U,0x84BE41DEU,0x1ADAD47DU,0x6DDDE4EBU,0xF4D4B551U,0x83D385C7U,
+    0x136C9856U,0x646BA8C0U,0xFD62F97AU,0x8A65C9ECU,0x14015C4FU,0x63066CD9U,0xFA0F3D63U,0x8D080DF5U,
+    0x3B6E20C8U,0x4C69105EU,0xD56041E4U,0xA2677172U,0x3C03E4D1U,0x4B04D447U,0xD20D85FDU,0xA50AB56BU,
+    0x35B5A8FAU,0x42B2986CU,0xDBBBC9D6U,0xACBCF940U,0x32D86CE3U,0x45DF5C75U,0xDCD60DCFU,0xABD13D59U,
+    0x26D930ACU,0x51DE003AU,0xC8D75180U,0xBFD06116U,0x21B4F4B5U,0x56B3C423U,0xCFBA9599U,0xB8BDA50FU,
+    0x2802B89EU,0x5F058808U,0xC60CD9B2U,0xB10BE924U,0x2F6F7C87U,0x58684C11U,0xC1611DABU,0xB6662D3DU,
+    0x76DC4190U,0x01DB7106U,0x98D220BCU,0xEFD5102AU,0x71B18589U,0x06B6B51FU,0x9FBFE4A5U,0xE8B8D433U,
+    0x7807C9A2U,0x0F00F934U,0x9609A88EU,0xE10E9818U,0x7F6A0DBBU,0x086D3D2DU,0x91646C97U,0xE6635C01U,
+    0x6B6B51F4U,0x1C6C6162U,0x856530D8U,0xF262004EU,0x6C0695EDU,0x1B01A57BU,0x8208F4C1U,0xF50FC457U,
+    0x65B0D9C6U,0x12B7E950U,0x8BBEB8EAU,0xFCB9887CU,0x62DD1DDFU,0x15DA2D49U,0x8CD37CF3U,0xFBD44C65U,
+    0x4DB26158U,0x3AB551CEU,0xA3BC0074U,0xD4BB30E2U,0x4ADFA541U,0x3DD895D7U,0xA4D1C46DU,0xD3D6F4FBU,
+    0x4369E96AU,0x346ED9FCU,0xAD678846U,0xDA60B8D0U,0x44042D73U,0x33031DE5U,0xAA0A4C5FU,0xDD0D7CC9U,
+    0x5005713CU,0x270241AAU,0xBE0B1010U,0xC90C2086U,0x5768B525U,0x206F85B3U,0xB966D409U,0xCE61E49FU,
+    0x5EDEF90EU,0x29D9C998U,0xB0D09822U,0xC7D7A8B4U,0x59B33D17U,0x2EB40D81U,0xB7BD5C3BU,0xC0BA6CADU,
+    0xEDB88320U,0x9ABFB3B6U,0x03B6E20CU,0x74B1D29AU,0xEAD54739U,0x9DD277AFU,0x04DB2615U,0x73DC1683U,
+    0xE3630B12U,0x94643B84U,0x0D6D6A3EU,0x7A6A5AA8U,0xE40ECF0BU,0x9309FF9DU,0x0A00AE27U,0x7D079EB1U,
+    0xF00F9344U,0x8708A3D2U,0x1E01F268U,0x6906C2FEU,0xF762575DU,0x806567CBU,0x196C3671U,0x6E6B06E7U,
+    0xFED41B76U,0x89D32BE0U,0x10DA7A5AU,0x67DD4ACCU,0xF9B9DF6FU,0x8EBEEFF9U,0x17B7BE43U,0x60B08ED5U,
+    0xD6D6A3E8U,0xA1D1937EU,0x38D8C2C4U,0x4FDFF252U,0xD1BB67F1U,0xA6BC5767U,0x3FB506DDU,0x48B2364BU,
+    0xD80D2BDAU,0xAF0A1B4CU,0x36034AF6U,0x41047A60U,0xDF60EFC3U,0xA867DF55U,0x316E8EEFU,0x4669BE79U,
+    0xCB61B38CU,0xBC66831AU,0x256FD2A0U,0x5268E236U,0xCC0C7795U,0xBB0B4703U,0x220216B9U,0x5505262FU,
+    0xC5BA3BBEU,0xB2BD0B28U,0x2BB45A92U,0x5CB36A04U,0xC2D7FFA7U,0xB5D0CF31U,0x2CD99E8BU,0x5BDEAE1DU,
+    0x9B64C2B0U,0xEC63F226U,0x756AA39CU,0x026D930AU,0x9C0906A9U,0xEB0E363FU,0x72076785U,0x05005713U,
+    0x95BF4A82U,0xE2B87A14U,0x7BB12BAEU,0x0CB61B38U,0x92D28E9BU,0xE5D5BE0DU,0x7CDCEFB7U,0x0BDBDF21U,
+    0x86D3D2D4U,0xF1D4E242U,0x68DDB3F8U,0x1FDA836EU,0x81BE16CDU,0xF6B9265BU,0x6FB077E1U,0x18B74777U,
+    0x88085AE6U,0xFF0F6A70U,0x66063BCAU,0x11010B5CU,0x8F659EFFU,0xF862AE69U,0x616BFFD3U,0x166CCF45U,
+    0xA00AE278U,0xD70DD2EEU,0x4E048354U,0x3903B3C2U,0xA7672661U,0xD06016F7U,0x4969474DU,0x3E6E77DBU,
+    0xAED16A4AU,0xD9D65ADCU,0x40DF0B66U,0x37D83BF0U,0xA9BCAE53U,0xDEBB9EC5U,0x47B2CF7FU,0x30B5FFE9U,
+    0xBDBDF21CU,0xCABAC28AU,0x53B39330U,0x24B4A3A6U,0xBAD03605U,0xCDD70693U,0x54DE5729U,0x23D967BFU,
+    0xB3667A2EU,0xC4614AB8U,0x5D681B02U,0x2A6F2B94U,0xB40BBE37U,0xC30C8EA1U,0x5A05DF1BU,0x2D02EF8DU
+};
+static inline uint32_t ComputeCRC32(const void* data, size_t len, uint32_t seed = 0xFFFFFFFFU) {
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    uint32_t crc = seed;
+    for (size_t i = 0; i < len; ++i)
+        crc = (crc >> 8) ^ kCrc32Table[(crc ^ p[i]) & 0xFF];
+    return crc ^ 0xFFFFFFFFU;
+}
+static std::string CRC32_ToHex(uint32_t crc) {
+    char buf[9];
+    sprintf_s(buf, "%08X", crc);
+    return buf;
+}
+typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX {
+    PVOID  Object;
+    ULONG  UniqueProcessId;
+    ULONG  HandleValue;
+    ULONG  GrantedAccess;
+    USHORT CreatorBackTraceIndex;
+    USHORT ObjectTypeIndex;
+    ULONG  HandleAttributes;
+    ULONG  Reserved;
+} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
+typedef struct _SYSTEM_HANDLE_INFORMATION_EX {
+    ULONG NumberOfHandles;
+    ULONG Reserved;
+    SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
+} SYSTEM_HANDLE_INFORMATION_EX;
+using NtQuerySystemInformation_t = NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+static NtQuerySystemInformation_t pNtQuerySystemInformation = nullptr;
+static inline uint64_t NowMs() {
+    FILETIME ft; GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER uli; uli.LowPart = ft.dwLowDateTime; uli.HighPart = ft.dwHighDateTime;
+    return (uli.QuadPart / 10000ULL);
+}
+static std::string ToLowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    return s;
+}
+static bool IsWhitelistedProc(const std::string& lowerExe, const std::string& lowerPath) {
+    static const char* wlNames[] = {
+        "steam.exe","steamservice.exe","steamwebhelper.exe",
+        "explorer.exe","discord.exe","obs64.exe",
+        "battleye.exe","beservice.exe","nvcontainer.exe"
+    };
+    for (auto* n : wlNames) if (lowerExe.find(n) != std::string::npos) return true;
+    if (lowerPath.find("\\windows\\") != std::string::npos) return true;
+    return false;
+}
+static std::string GetExePathByPid(DWORD pid) {
+    std::string out = "(unknown)";
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return out;
+    char buf[MAX_PATH]; DWORD sz = MAX_PATH;
+    if (QueryFullProcessImageNameA(h, 0, buf, &sz)) out.assign(buf, sz);
+    CloseHandle(h);
+    return out;
+}
+static std::string ComputeBufferSHA256(const void* data, size_t len) {
+    std::string out = "(failed)";
+    HCRYPTPROV hProv = 0; HCRYPTHASH hHash = 0;
+    BYTE rgbHash[32]; DWORD cbHash = sizeof(rgbHash); CHAR hex[65] = { 0 };
+    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
+        CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+        if (CryptHashData(hHash, (const BYTE*)data, (DWORD)len, 0) &&
+            CryptGetHashParam(hHash, HP_HASHVAL, rgbHash, &cbHash, 0)) {
+            for (DWORD i = 0; i < cbHash; ++i) sprintf_s(hex + i * 2, 3, "%02x", rgbHash[i]);
+            out = hex;
+        }
+    }
+    if (hHash) CryptDestroyHash(hHash);
+    if (hProv) CryptReleaseContext(hProv, 0);
+    return out;
+}
+static bool MapFileReadAll(const wchar_t* path, BYTE*& base, size_t& size, HANDLE& hFile, HANDLE& hMap) {
+    base = nullptr; size = 0; hFile = INVALID_HANDLE_VALUE; hMap = nullptr;
+    hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER li;
+    if (!GetFileSizeEx(hFile, &li) || li.QuadPart <= 0) { CloseHandle(hFile); return false; }
+    hMap = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) { CloseHandle(hFile); return false; }
+    base = (BYTE*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    if (!base) { CloseHandle(hMap); CloseHandle(hFile); return false; }
+    size = (size_t)li.QuadPart;
+    return true;
+}
+static bool FindSectionInMappedData(BYTE* mapBase, const char* secName, BYTE*& secPtr, DWORD& secSize) {
+    __try {
+        auto* dos = (IMAGE_DOS_HEADER*)mapBase;
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
+#ifdef _WIN64
+            auto* nt = (IMAGE_NT_HEADERS64*)(mapBase + dos->e_lfanew);
+#else
+            auto* nt = (IMAGE_NT_HEADERS32*)(mapBase + dos->e_lfanew);
+#endif
+            if (nt->Signature == IMAGE_NT_SIGNATURE) {
+                auto* sh = (IMAGE_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
+                WORD n = nt->FileHeader.NumberOfSections;
+                for (WORD i = 0; i < n; i++) {
+                    char name[9] = { 0 }; memcpy(name, sh[i].Name, 8);
+                    if (_stricmp(name, secName) == 0) {
+                        secPtr = mapBase + sh[i].PointerToRawData;
+                        secSize = sh[i].SizeOfRawData;
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+static bool GetSectionPtr(HMODULE base, const char* secName, BYTE*& secPtr, DWORD& secSize) {
+    if (!base) return false;
+    auto* dos = (IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+#ifdef _WIN64
+    auto* nt = (IMAGE_NT_HEADERS64*)((BYTE*)base + dos->e_lfanew);
+#else
+    auto* nt = (IMAGE_NT_HEADERS32*)((BYTE*)base + dos->e_lfanew);
+#endif
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    auto* sh = (IMAGE_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
+    WORD n = nt->FileHeader.NumberOfSections;
+    for (WORD i = 0; i < n; i++) {
+        char name[9] = { 0 }; memcpy(name, sh[i].Name, 8);
+        if (_stricmp(name, secName) == 0) {
+            secPtr = (BYTE*)base + sh[i].VirtualAddress;
+            secSize = sh[i].Misc.VirtualSize ? sh[i].Misc.VirtualSize : sh[i].SizeOfRawData;
+            return true;
+        }
+    }
+    return false;
+}
+static std::mutex g_crcDiskCacheMx;
+static std::unordered_map<std::wstring, uint32_t> g_crcDiskCache;
+static bool GetDiskSectionCRC32(const wchar_t* dllPath, const char* secName, uint32_t& outCrc) {
+    BYTE* mapBase = nullptr; size_t mapSize = 0; HANDLE hf = INVALID_HANDLE_VALUE, hm = nullptr;
+    if (!MapFileReadAll(dllPath, mapBase, mapSize, hf, hm)) return false;
+    bool ok = false; BYTE* secPtr = nullptr; DWORD secSize = 0;
+    ok = FindSectionInMappedData(mapBase, secName, secPtr, secSize);
+    if (ok && secPtr && secSize) outCrc = ComputeCRC32(secPtr, secSize);
+    if (mapBase) UnmapViewOfFile(mapBase);
+    if (hm) CloseHandle(hm);
+    if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
+    return ok;
+}
+static bool GetDiskSectionSHA256(const wchar_t* dllPath, const char* secName, std::string& outSha) {
+    BYTE* mapBase = nullptr; size_t mapSize = 0; HANDLE hf = INVALID_HANDLE_VALUE, hm = nullptr;
+    if (!MapFileReadAll(dllPath, mapBase, mapSize, hf, hm)) return false;
+    bool ok = false; BYTE* secPtr = nullptr; DWORD secSize = 0;
+    ok = FindSectionInMappedData(mapBase, secName, secPtr, secSize);
+    if (ok && secPtr && secSize) outSha = ComputeBufferSHA256(secPtr, secSize);
+    if (mapBase) UnmapViewOfFile(mapBase);
+    if (hm) CloseHandle(hm);
+    if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
+    return ok;
+}
+static bool GetDiskSectionCRC32_Cached(const wchar_t* dllPath, const char* secName, uint32_t& outCrc) {
+    {
+        std::lock_guard<std::mutex> lk(g_crcDiskCacheMx);
+        auto it = g_crcDiskCache.find(dllPath);
+        if (it != g_crcDiskCache.end()) { outCrc = it->second; return true; }
+    }
+    uint32_t crc = 0;
+    if (!GetDiskSectionCRC32(dllPath, secName, crc)) return false;
+    {
+        std::lock_guard<std::mutex> lk(g_crcDiskCacheMx);
+        g_crcDiskCache.emplace(dllPath, crc);
+    }
+    outCrc = crc;
+    return true;
+}
+static uint32_t RollingCRC32(const BYTE* data, DWORD size) {
+    const DWORD win = 64 * 1024;
+    static DWORD offset = 0;
+    if (size == 0) return 0;
+    if (offset >= size) offset = 0;
+    DWORD chunk = (offset + win <= size) ? win : (size - offset);
+    uint32_t crc = ComputeCRC32(data + offset, chunk);
+    offset += chunk;
+    return crc;
+}
+struct SuspectInfo {
+    std::string moduleBaseName;
+    std::string modulePath;
+    std::string company;
+    std::string product;
+    size_t      hits = 0;
+    void* exampleAddr = nullptr;
+};
+static uintptr_t SafeReadPtrNoThrow(uintptr_t p) {
+    __try { return *(uintptr_t*)p; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+static void QueryFileVersionStringsW(const wchar_t* path, std::wstring& company, std::wstring& product) {
+    company.clear(); product.clear();
+    DWORD handle = 0;
+    DWORD sz = GetFileVersionInfoSizeW(path, &handle);
+    if (!sz) return;
+
+    std::vector<BYTE> buf(sz);
+    if (!GetFileVersionInfoW(path, 0, sz, buf.data())) return;
+
+    struct LANGANDCODEPAGE { WORD wLanguage; WORD wCodePage; };
+    LANGANDCODEPAGE* lpTranslate = nullptr; UINT cbTranslate = 0;
+    if (!VerQueryValueW(buf.data(), L"\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate) || !cbTranslate) {
+        // fallback на 040904E4 (en-US, Unicode)
+        LANGANDCODEPAGE fallback{ 0x0409, 0x04B0 };
+        lpTranslate = &fallback; cbTranslate = sizeof(fallback);
+    }
+
+    auto getStr = [&](const wchar_t* name, std::wstring& out) {
+        for (UINT i = 0; i < cbTranslate / sizeof(LANGANDCODEPAGE); ++i) {
+            wchar_t subBlock[256];
+            swprintf_s(subBlock, L"\\StringFileInfo\\%04x%04x\\%s",
+                lpTranslate[i].wLanguage, lpTranslate[i].wCodePage, name);
+            LPVOID val = nullptr; UINT size = 0;
+            if (VerQueryValueW(buf.data(), subBlock, &val, &size) && val && size) {
+                out.assign((wchar_t*)val);
+                if (!out.empty()) return true;
+            }
+        }
+        return false;
+        };
+
+    std::wstring c, p;
+    if (getStr(L"CompanyName", c)) company = c;
+    if (getStr(L"ProductName", p)) product = p;
+}
+static bool FillSuspectByAddress(uintptr_t addr, SuspectInfo& out) {
+    HMODULE hMod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCSTR)addr, &hMod) || !hMod) {
+        // может быть не в модуле (JIT, драйверный map в user space и т.п.)
+        out.moduleBaseName = "(not in module)";
+        out.modulePath = "(unknown)";
+        out.company = "";
+        out.product = "";
+        out.exampleAddr = (void*)addr;
+        return true;
+    }
+
+    char pathA[MAX_PATH] = {};
+    if (!GetModuleFileNameA(hMod, pathA, MAX_PATH)) {
+        out.moduleBaseName = "(unknown)";
+        out.modulePath = "(GetModuleFileNameA failed)";
+        out.exampleAddr = (void*)addr;
+        return true;
+    }
+
+    char baseA[MAX_PATH] = {};
+    if (!GetModuleBaseNameA(GetCurrentProcess(), hMod, baseA, MAX_PATH)) {
+        // ничего страшного
+        strcpy_s(baseA, "(unknown)");
+    }
+
+    // версионные строки
+    wchar_t pathW[MAX_PATH]; MultiByteToWideChar(CP_UTF8, 0, pathA, -1, pathW, MAX_PATH);
+    std::wstring compW, prodW;
+    QueryFileVersionStringsW(pathW, compW, prodW);
+
+    // заполнить
+    out.moduleBaseName = baseA;
+    out.modulePath = pathA;
+    {
+        char tmp[512]; tmp[0] = 0;
+        if (!compW.empty()) WideCharToMultiByte(CP_UTF8, 0, compW.c_str(), -1, tmp, (int)sizeof(tmp), nullptr, nullptr);
+        out.company = tmp;
+        tmp[0] = 0;
+        if (!prodW.empty()) WideCharToMultiByte(CP_UTF8, 0, prodW.c_str(), -1, tmp, (int)sizeof(tmp), nullptr, nullptr);
+        out.product = tmp;
+    }
+    out.exampleAddr = (void*)addr;
+    return true;
+}
+static SuspectInfo IdentifyPatchOwnerInText(HMODULE modBase, BYTE* textPtr, DWORD textSize) {
+    SuspectInfo best; best.hits = 0; best.exampleAddr = nullptr;
+    if (!modBase || !textPtr || textSize < 8) return best;
+
+    uintptr_t modBeg = (uintptr_t)modBase;
+    auto* dos = (IMAGE_DOS_HEADER*)modBase;
+#ifdef _WIN64
+    auto* nt = (IMAGE_NT_HEADERS64*)((BYTE*)modBase + dos->e_lfanew);
+#else
+    auto* nt = (IMAGE_NT_HEADERS32*)((BYTE*)modBase + dos->e_lfanew);
+#endif
+    uintptr_t modEnd = modBeg + nt->OptionalHeader.SizeOfImage;
+
+    std::unordered_map<std::string, SuspectInfo> hits;
+
+    BYTE* p = textPtr;
+    BYTE* end = textPtr + (textSize - 8);
+
+    while (p < end) {
+        // near jmp rel32: E9 xx xx xx xx
+        if (p[0] == 0xE9) {
+            int32_t rel = *(int32_t*)(p + 1);
+            uintptr_t dst = (uintptr_t)(p + 5) + rel;
+            if (dst < modBeg || dst >= modEnd) {
+                SuspectInfo si;
+                if (FillSuspectByAddress(dst, si)) {
+                    auto& slot = hits[si.modulePath];
+                    if (slot.hits == 0) slot = si;
+                    slot.hits++;
+                }
+            }
+            p += 5;
+            continue;
+        }
+        // jmp [rip+rel32]: FF 25 xx xx xx xx
+        if (p[0] == 0xFF && p[1] == 0x25) {
+            int32_t rel = *(int32_t*)(p + 2);
+            uintptr_t indTargetPtr = (uintptr_t)(p + 6) + rel;
+            uintptr_t absDst = SafeReadPtrNoThrow(indTargetPtr);
+            if (absDst && (absDst < modBeg || absDst >= modEnd)) {
+                SuspectInfo si;
+                if (FillSuspectByAddress(absDst, si)) {
+                    auto& slot = hits[si.modulePath];
+                    if (slot.hits == 0) slot = si;
+                    slot.hits++;
+                }
+            }
+            p += 6;
+            continue;
+        }
+        p += 1;
+    }
+
+    for (auto& kv : hits) {
+        if (kv.second.hits > best.hits) best = kv.second;
+    }
+    return best;
+}
+
+static void CheckModuleTextIntegrityOnce_Light(const wchar_t* diskDll, const char* modName, HMODULE modBase) {
+    BYTE* secMem = nullptr; DWORD secMemSize = 0;
+    if (!GetSectionPtr(modBase, ".text", secMem, secMemSize) || !secMemSize) return;
+
+    uint32_t crcMemRolling = RollingCRC32(secMem, secMemSize);
+    uint32_t crcDiskRolling = 0;
+    if (!GetDiskSectionCRC32_Cached(diskDll, ".text", crcDiskRolling)) return;
+
+    if (crcMemRolling == crcDiskRolling) return;
+
+    uint32_t fullMem = ComputeCRC32(secMem, secMemSize);
+    uint32_t crcDiskFull = 0;
+    std::string shaMem = ComputeBufferSHA256(secMem, secMemSize);
+    std::string shaDisk;
+    GetDiskSectionCRC32(diskDll, ".text", crcDiskFull);
+    if (!GetDiskSectionSHA256(diskDll, ".text", shaDisk)) shaDisk = "(fail)";
+
+    if (fullMem != crcDiskFull) {
+        SuspectInfo suspect = IdentifyPatchOwnerInText(modBase, secMem, secMemSize);
+
+        char pathA[MAX_PATH] = "(unknown)";
+        GetModuleFileNameA(modBase, pathA, MAX_PATH);
+
+        if (suspect.hits > 0) {
+            LogFormat("[VEH] %s .text MISMATCH | CRC(mem=%s disk=%s) | PATH=%s | SHA(mem=%s disk=%s) | SUSPECT_MOD=%s | SUSPECT_PATH=%s | COMPANY=%s | PRODUCT=%s | HITS=%zu",
+                modName,
+                CRC32_ToHex(fullMem).c_str(), CRC32_ToHex(crcDiskFull).c_str(),
+                pathA, shaMem.c_str(), shaDisk.c_str(),
+                suspect.moduleBaseName.c_str(), suspect.modulePath.c_str(),
+                (suspect.company.empty() ? "(unknown)" : suspect.company.c_str()),
+                (suspect.product.empty() ? "(unknown)" : suspect.product.c_str()),
+                suspect.hits);
+        }
+        else {
+            LogFormat("[VEH] %s .text MISMATCH | CRC(mem=%s disk=%s) | PATH=%s | SHA(mem=%s disk=%s) | SUSPECT=not-found",
+                modName,
+                CRC32_ToHex(fullMem).c_str(), CRC32_ToHex(crcDiskFull).c_str(),
+                pathA, shaMem.c_str(), shaDisk.c_str());
+        }
+    }
+}
+
+static void CheckModuleTextIntegrityOnce(const wchar_t* diskDll, const char* modName, HMODULE modBase) {
+    CheckModuleTextIntegrityOnce_Light(diskDll, modName, modBase);
+}
+__declspec(noinline)
+static void ScanExternalHandlesOnce_SEHWrapper() {
+    // никаких std здесь
+    __try { ScanExternalHandlesOnce_NoSEH(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { /* молча */ }
+}
+static size_t g_handleCursor = 0;
+static std::unordered_map<DWORD, uint64_t> g_pidCooldownMs;
+static std::mutex g_pidCooldownMx;
+static void ScanExternalHandlesOnce_NoSEH() {
+    if (!pNtQuerySystemInformation) {
+        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+        if (!ntdll) return;
+        pNtQuerySystemInformation =
+            reinterpret_cast<NtQuerySystemInformation_t>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
+        if (!pNtQuerySystemInformation) return;
+    }
+
+    ULONG need = 1u << 20; std::vector<BYTE> buf(need);
+    NTSTATUS st; ULONG retLen = 0;
+    for (;;) {
+        st = pNtQuerySystemInformation(0x40, buf.data(), (ULONG)buf.size(), &retLen);
+        if (st == 0) break; // STATUS_SUCCESS
+        if (retLen <= buf.size()) buf.resize(buf.size() * 2);
+        else buf.resize(retLen + (1u << 16));
+        if (buf.size() > (1u << 26)) return; // 64MB cap
+    }
+
+    auto* shi = (SYSTEM_HANDLE_INFORMATION_EX*)buf.data();
+    const ULONG total = shi->NumberOfHandles;
+    if (total == 0) return;
+
+    DWORD myPid = GetCurrentProcessId();
+    const DWORD vmMask = PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
+
+    const uint64_t startMs = NowMs();
+    const uint64_t budgetMs = 8;
+    const size_t   limitDup = 300;
+    size_t duplicated = 0;
+
+    size_t i = g_handleCursor % total;
+    size_t processed = 0;
+
+    while (processed < total) {
+        const auto& h = shi->Handles[i];
+
+        i = (i + 1) % total;
+        ++processed;
+
+        if (h.UniqueProcessId == myPid || h.UniqueProcessId == 0 || h.UniqueProcessId == 4) continue;
+        if ((h.GrantedAccess & vmMask) == 0) continue;
+
+        {
+            std::lock_guard<std::mutex> lk(g_pidCooldownMx);
+            auto it = g_pidCooldownMs.find(h.UniqueProcessId);
+            if (it != g_pidCooldownMs.end() && it->second > startMs) continue;
+        }
+
+        if (duplicated >= limitDup) break;
+        if ((NowMs() - startMs) >= budgetMs) break;
+
+        HANDLE owner = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, h.UniqueProcessId);
+        if (!owner) {
+            std::lock_guard<std::mutex> lk(g_pidCooldownMx);
+            g_pidCooldownMs[h.UniqueProcessId] = startMs + 30'000;
+            continue;
+        }
+
+        HANDLE dup = nullptr;
+        if (DuplicateHandle(owner, (HANDLE)(uintptr_t)h.HandleValue, GetCurrentProcess(),
+            &dup, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            ++duplicated;
+
+            DWORD targetPid = GetProcessId(dup);
+            if (targetPid == myPid) {
+                std::string path = GetExePathByPid(h.UniqueProcessId);
+                std::string lower = ToLowerCopy(path);
+                std::string exe = path;
+                auto p = exe.find_last_of("\\/"); if (p != std::string::npos) exe = exe.substr(p + 1);
+                std::string exeLower = ToLowerCopy(exe);
+
+                if (!IsWhitelistedProc(exeLower, lower)) {
+                    LogFormat("[VEH] HANDLE from PID=%lu Acc=0x%08X -> OUR_PID=%lu | EXE=%s | PATH=%s", h.UniqueProcessId, h.GrantedAccess, myPid, exe.c_str(), path.c_str());
+                    std::lock_guard<std::mutex> lk(g_pidCooldownMx);
+                    g_pidCooldownMs[h.UniqueProcessId] = startMs + 5'000;
+                }
+                else {
+                    std::lock_guard<std::mutex> lk(g_pidCooldownMx);
+                    g_pidCooldownMs[h.UniqueProcessId] = startMs + 120'000;
+                }
+            }
+            CloseHandle(dup);
+        }
+        CloseHandle(owner);
+
+        if ((duplicated % 32) == 0) SwitchToThread();
+        if ((NowMs() - startMs) >= budgetMs) break;
+    }
+
+    g_handleCursor = i;
+}
+__declspec(noinline)
+static void IntegrityOnce_SEHWrapper() {
+    __try { IntegrityOnce_NoSEH(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { /* тихо */ }
+}
+static void IntegrityOnce_NoSEH() {
+    wchar_t sysdir[MAX_PATH]; if (!GetSystemDirectoryW(sysdir, MAX_PATH)) return;
+    std::wstring ntdllPath = std::wstring(sysdir) + L"\\ntdll.dll";
+    std::wstring k32Path = std::wstring(sysdir) + L"\\kernel32.dll";
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    if (ntdll) CheckModuleTextIntegrityOnce(ntdllPath.c_str(), "NTDLL", ntdll);
+    if (k32)   CheckModuleTextIntegrityOnce(k32Path.c_str(), "KERNEL32", k32);
+}
+static std::atomic<bool> g_softDetectorsStarted{ false };
+static void HandleScannerLoop() {
+#ifdef THREAD_MODE_BACKGROUND_BEGIN
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+#endif
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+
+    DWORD sleepMs = 10;
+    std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+
+    while (true) { 
+        try {
+            const ULONGLONG t0 = GetTickCount64();
+            ScanExternalHandlesOnce_SEHWrapper();
+            const ULONGLONG spent = GetTickCount64() - t0;
+
+            if (spent >= 6)      sleepMs = std::min<DWORD>(sleepMs + 2, 25);
+            else if (sleepMs > 5) sleepMs -= 1;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        }
+        catch (const std::exception& e) {
+            break;
+        }
+    }
+
+#ifdef THREAD_MODE_BACKGROUND_END
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+#endif
+}
+static void IntegrityLoop() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+    while (true) { 
+        try {
+            IntegrityOnce_SEHWrapper();
+            std::this_thread::sleep_for(std::chrono::milliseconds(60000));
+        }
+        catch (const std::exception& e) {
+            break;
+        }
+    }
+}
+void StartSoftDetectors() {
+    Log("[LOGEN] StartSoftDetectors() called");
+
+    static std::atomic<bool> g_softDetectorsStarted{ false };
+
+    bool expected = false;
+    if (!g_softDetectorsStarted.compare_exchange_strong(expected, true)) {
+        Log("[LOGEN] Soft detectors already running; skipping new start");
+        return;
+    }
+
+    try {
+        std::thread t1([] {
+            Log("[LOGEN] HandleScannerLoop thread starting");
+            HandleScannerLoop();
+            });
+        t1.detach();
+
+        std::thread t2([] {
+            Log("[LOGEN] IntegrityLoop thread starting");
+            IntegrityLoop();
+            });
+        t2.detach();
+        Log("[LOGEN] Soft detectors started (HandleScanner + IntegrityCheck)");
+    }
+    catch (...) {
+        g_softDetectorsStarted.store(false, std::memory_order_relaxed);
+        Log("[LOGEN] Soft detectors start FAILED (exception on thread creation)");
+    }
+}
+#pragma endregion
+#pragma region Monitor_Only
+bool ValidateWorldPtr(uintptr_t worldPtr) {
+    if (!worldPtr || worldPtr < 0x10000 || worldPtr == 0xFFFFFFFFFFFFFFFF || !IsValidAddress(worldPtr)) {
+        return false;
+    }
+
+    uintptr_t entityArray = 0;
+    SIZE_T bytesRead = 0;
+
+    // Проверяем NearEntList (OFFSET_WORLD_ENTITYARRAY)
+    if (!IsValidAddress(worldPtr + OFFSET_WORLD_ENTITYARRAY)) return false;
+    if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(worldPtr + OFFSET_WORLD_ENTITYARRAY), &entityArray, sizeof(entityArray), &bytesRead) ||
+        bytesRead != sizeof(entityArray)) {
+        return false;
+    }
+
+    if (!IsValidAddress(entityArray)) return false;
+
+    LogFormat("[LOGEN] ValidateWorldPtr Validated: 0x%p (NearEntList: 0x%p)",
+        (void*)worldPtr, (void*)entityArray);
+
+    return true;
+}
+uintptr_t FindWorldByStaticOffsetWorker128() {
+    static uintptr_t g_FirstValidWorldPtr = 0;
+
+    if (g_FirstValidWorldPtr != 0)
+        return g_FirstValidWorldPtr;
+
+    uintptr_t base = (uintptr_t)GetModuleHandleA("DayZ_x64.exe");
+    if (!base) return 0;
+
+    uintptr_t offsets[] = { OFFSET_WORLD_STATIC }; //0xF4B0A0, 0xF4A0D0 //0xF4B0A0
+    for (uintptr_t offset : offsets) {
+        uintptr_t address = base + offset;
+        if (IsValidAddress(address)) {
+            uintptr_t candidate = *(uintptr_t*)address;
+            if (IsValidAddress(candidate)) {
+                g_FirstValidWorldPtr = candidate;
+                return g_FirstValidWorldPtr;
+            }
+        }
+    }
+    return 0;
+}
+DWORD WINAPI InitializeSystemsThread(LPVOID lpParam) {
+    if (!lpParam) {
+        Log("[LOGEN] CRITICAL: lpParam is NULL!");
+        return 0;
+    }
+    auto* args = static_cast<std::pair<uintptr_t, uintptr_t>*>(lpParam);
+    uintptr_t world = args->first;
+    uintptr_t entityArray = args->second;
+    delete args;
+    bool epsRunning = false;
+    try {
+        epsRunning = EPS::IsRunning();
+        LogFormat("[LOGEN] EPS::IsRunning = %d", epsRunning);
+    }
+    catch (...) {
+        Log("[LOGEN] EPS::IsRunning EXCEPTION!");
+        return 0;
+    }
+    bool ok = false;
+    try {
+        Log("[LOGEN] Calling InitializeSystemsWithStability...");
+        ok = InitializeSystemsWithStability(world, entityArray);
+        LogFormat("[LOGEN] InitializeSystemsWithStability returned: %d", ok);
+    }
+    catch (const std::exception& e) {
+        LogFormat("[LOGEN] EXCEPTION: %s", e.what());
+    }
+    catch (...) {
+        Log("[LOGEN] UNKNOWN EXCEPTION");
+    }
+    Log("[LOGEN] Thread finished");
+    return 0;
+}
+void InitializeProtection() {
+    static bool g_ProtectionInitialized = false;
+    if (g_ProtectionInitialized) {
+        Log("[LOGEN] InitializeProtection already running, skipping...");
+        return;
+    }
+    g_ProtectionInitialized = true;
+    try {
+        Log("[LOGEN] InitializeProtection ...");
+        uintptr_t world = 0;
+        for (int i = 0; i < 10; ++i) {
+            world = FindWorldByStaticOffsetWorker128();
+            if (IsValidAddress(world)) break;
+            Log("[LOGEN] World not found, retrying...");
+            Sleep(500);
+        }
+        if (!IsValidAddress(world)) {
+            Log("[LOGEN] World not found after retries, skipping protection.");
+            return;
+        }
+        LogFormat("[LOGEN] World found @ 0x%p", (void*)world);
+        if (!ValidateWorldPtr(world)) {
+            Log("[LOGEN] Invalid World ptr aborting protection.");
+            return;
+        }
+        uintptr_t entityArray = 0;
+        if (!SafeReadPtr(world + OFFSET_WORLD_ENTITYARRAY, entityArray) || !IsValidAddress(entityArray)) {
+            Log("[LOGEN] Invalid EntityArray (NearEntList), aborting protection.");
+            return;
+        }
+        LogFormat("[LOGEN] EntityArray read OK @ 0x%p", (void*)entityArray);
+        Sleep(2000);
+        std::thread([]() { StartSoftDetectors(); }).detach(); 
+        Log("[LOGEN] InitializeSystemsThread waite 10 sec.");
+        Sleep(10000);
+        auto* systemsArgs = new std::pair<uintptr_t, uintptr_t>(world, entityArray);
+        HANDLE systemsThread = CreateThread(nullptr, 0, InitializeSystemsThread, systemsArgs, 0, nullptr);
+        if (!systemsThread) {
+            Log("[LOGEN] Failed to create InitializeSystems thread");
+        }
+        else {
+            Log("[LOGEN] InitializeSystems thread created");
+        }
+        Log("[LOGEN] InitializeProtection succesful");
+    }
+    catch (...) {
+        Log("[LOGEN] InitializeProtection crashed");
+    }
+}
+#pragma endregion
+#pragma region ModulHiden
+void ReadCriticalSections(HANDLE hProcess, uintptr_t baseAddress, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath = "") {  // Добавили modulePath с значением по умолчанию
+
+    const char* sections[] = { ".text", ".rdata", ".data" };
+
+    // Если modulePath не передан, пытаемся получить его
+    std::string fullModulePath = modulePath;
+    if (fullModulePath.empty() && baseAddress != 0) {
+        char path[MAX_PATH] = { 0 };
+        if (GetModuleFileNameExA(hProcess, (HMODULE)baseAddress, path, MAX_PATH)) {
+            fullModulePath = path;
+        }
+    }
+
+
+    // Вычисляем SHA256 файла (если путь существует)
+    std::string fileHash;
+    if (!fullModulePath.empty()) {
+        fileHash = CalculateFileSHA256Safe(fullModulePath);
+        if (fileHash.empty() || fileHash == "failed_to_read_file_or_compute_hash") {
+            fileHash = "hash_unavailable";
+        }
+    }
+    else {
+        fileHash = "path_unknown";
+    }
+
+    for (const char* section : sections) {
+        BYTE* secPtr = nullptr;
+        DWORD secSize = 0;
+
+        if (GetSectionPtr((HMODULE)baseAddress, section, secPtr, secSize) && secSize > 0) {
+            size_t checkSize = (secSize > 4096) ? 4096 : secSize;
+
+            std::vector<char> buffer(checkSize);
+            SIZE_T bytesRead = 0;
+
+            if (ReadProcessMemory(hProcess, secPtr, buffer.data(), checkSize, &bytesRead)) {
+                std::string currentHash = calculateSHA256(buffer);
+                static std::map<std::string, std::string> previousHashes;
+
+
+                std::string lowerPath = fullModulePath;
+                std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
+                std::string lowerDllName = Name_Dll;
+                std::transform(lowerDllName.begin(), lowerDllName.end(), lowerDllName.begin(), ::tolower);
+
+                if (lowerPath.find(lowerDllName) != std::string::npos) {
+                    // Это наша DLL - игнорируем или логируем с низким приоритетом
+                    if (strcmp(section, ".data") == 0) {
+                        continue; // Пропускаем дальнейшую обработку
+                    }
+                }
+
+                std::string key = moduleName + ":" + section;
+                if (previousHashes.find(key) != previousHashes.end()) {
+                    if (previousHashes[key] != currentHash) {
+                        // Полный путь к файлу
+                        std::string displayPath = fullModulePath.empty() ? moduleName : fullModulePath;
+
+                        // Формируем подробный лог
+                        std::stringstream ss;
+                        ss << "[WARNING HOOK] Section " << section
+                            << " modified in " << displayPath
+                            << " | Process: " << processName << " (PID: " << processId << ")"
+                            << " | Base: 0x" << std::hex << baseAddress
+                            << " | Section Hash: " << currentHash
+                            << " | File SHA256: " << fileHash;
+
+                        Log(ss.str());
+
+                        // Дополнительно логируем для вашего дискорда
+                        StartSightImgDetection("[WARNING HOOK] Section " + std::string(section) + " modified in " + displayPath + " | SHA256: " + fileHash);
+                    }
+                }
+                else {
+                    previousHashes[key] = currentHash;
+                    // Опционально: логируем первую загрузку
+                    if (std::string(section) == ".data") { // Только для интересующей нас секции
+                        std::stringstream ss;
+                        ss << "[INFO] Section " << section
+                            << " first loaded in " << fullModulePath
+                            << " | Initial Hash: " << currentHash
+                            << " | File SHA256: " << fileHash;
+                        Log(ss.str());
+                    }
+                }
+            }
+        }
+    }
+}
+bool IsSpoofedSystemModule(const std::string& modulePath) {
+    std::string lowerPath = ToLower(modulePath);
+    if (lowerPath.find("system32") != std::string::npos) {
+        char realSystem32[MAX_PATH];
+        GetSystemDirectoryA(realSystem32, MAX_PATH);
+        std::string realSystem32Lower = ToLower(realSystem32);
+        if (lowerPath.find(realSystem32Lower) == std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+bool IsLikelyInjected(const std::string& modulePath, const std::string& moduleName) {
+    std::string lowerPath = ToLower(modulePath);
+    const std::vector<std::string> suspiciousPaths = {
+        "temp\\", "appdata\\", "users\\", "programdata\\",
+        "windows\\temp\\", "downloads\\", "desktop\\"
+    };
+
+    for (const auto& path : suspiciousPaths) {
+        if (lowerPath.find(path) != std::string::npos) {
+            return true;
+        }
+    }
+    const std::vector<std::string> suspiciousNames = {
+        "inject", "hook", "cheat", "hack", "mod", "loader",
+        "dinput", "dxgi", "d3d", "opengl", "trainer"
+    };
+
+    std::string lowerName = ToLower(moduleName);
+    for (const auto& name : suspiciousNames) {
+        if (lowerName.find(name) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+void EnhancedModuleCheck() {
+    DWORD currentPid = GetCurrentProcessId();
+    char currentProcessName[MAX_PATH] = "";
+
+    if (GetModuleBaseNameA(GetCurrentProcess(), NULL, currentProcessName, MAX_PATH)) {
+        if (_stricmp(currentProcessName, "DayZ_x64.exe") != 0) {
+            return;
+        }
+    }
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, currentPid);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return;
+
+    MODULEENTRY32 me;
+    me.dwSize = sizeof(me);
+
+    if (Module32First(hSnapshot, &me)) {
+        do {
+            std::string moduleName = WideStringToString(me.szModule);
+            std::string modulePath = WideStringToString(me.szExePath);
+            std::string lowerPath = ToLower(modulePath);
+
+            if (!ends_with_dll(moduleName)) continue;
+
+            // Пропускаем системные и доверенные пути
+            if (lowerPath.find("system32") != std::string::npos ||
+                lowerPath.find("syswow64") != std::string::npos ||
+                lowerPath.find("\\windows\\") != std::string::npos ||
+                lowerPath.find("\\steam\\") != std::string::npos ||
+                lowerPath.find("\\battleye\\") != std::string::npos) {
+                continue;
+            }
+
+            bool isSuspicious = IsSuspiciousModule(moduleName);
+            bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me.hModule);
+            bool likelyInjected = IsLikelyInjected(modulePath, moduleName);
+
+            // Только действительно подозрительные модули
+            if ((isSuspicious && usesMemoryFunctions) || likelyInjected) {
+                std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " | SHA256: " + fileHash);
+                StartSightImgDetection("[WARNING HOOK] INJECTED DLL: " + modulePath + " | SHA256: " + fileHash);
+                ReadCriticalSections(GetCurrentProcess(), (uintptr_t)me.modBaseAddr, currentPid, currentProcessName, moduleName, modulePath);
+            }
+
+        } while (Module32Next(hSnapshot, &me));
+    }
+
+    CloseHandle(hSnapshot);
+}
+void DetectHiddenModules() {
+    DWORD currentPid = GetCurrentProcessId();
+
+    // Проверяем только в DayZ
+    char currentProcessName[MAX_PATH] = "";
+    if (GetModuleBaseNameA(GetCurrentProcess(), NULL, currentProcessName, MAX_PATH)) {
+        if (_stricmp(currentProcessName, Name_GameEXE.c_str()) != 0) return;
+    }
+
+    std::set<std::string> toolhelpModules;
+    std::set<std::string> enumModules;
+
+    auto IsSystemModule = [](const std::string& modulePath) -> bool {
+        std::string lowerPath = ToLower(modulePath);
+
+        static const std::vector<std::string> systemPaths = {
+            "c:\\windows\\", "d:\\windows\\", "e:\\windows\\",
+            "c:\\winnt\\",
+            "\\windows\\system32\\", "\\windows\\syswow64\\",
+            "\\windows\\winsxs\\", "\\windows\\temp\\",
+            "\\windows\\installer\\", "\\windows\\assembly\\",
+            "c:\\program files\\", "d:\\program files\\",
+            "c:\\program files (x86)\\", "d:\\program files (x86)\\",
+            "\\appdata\\local\\microsoft\\",
+            "\\appdata\\local\\google\\",
+            "\\appdata\\local\\temp\\",
+            "\\appdata\\roaming\\microsoft\\",
+            "\\appdata\\locallow\\microsoft\\",
+            "\\steam\\", "\\steamapps\\", "\\common\\",
+            "\\battleye\\", "\\easy anti-cheat\\",
+            "\\amd\\", "\\nvidia\\", "\\intel\\",
+            "\\radeonsoftware\\", "\\cnext\\",
+            "\\programdata\\", "\\common files\\",
+            "\\windowsapps\\", "\\microsoft\\",
+            "\\system32\\", "\\syswow64\\"
+        };
+
+        for (const auto& path : systemPaths) {
+            if (lowerPath.find(path) != std::string::npos) {
+                return true;
+            }
+        }
+
+        char systemDir[MAX_PATH];
+        if (GetSystemDirectoryA(systemDir, MAX_PATH)) {
+            std::string systemDirLower = ToLower(systemDir);
+            if (lowerPath.find(systemDirLower) != std::string::npos) {
+                return true;
+            }
+        }
+
+        static const std::vector<std::string> systemFiles = {
+            "kernel32.dll", "user32.dll", "ntdll.dll", "advapi32.dll",
+            "gdi32.dll", "shell32.dll", "ole32.dll", "combase.dll",
+            "rpcrt4.dll", "crypt32.dll", "ws2_32.dll", "wininet.dll",
+            "shlwapi.dll", "msvcrt.dll", "ucrtbase.dll", "sechost.dll",
+            "imm32.dll", "dinput8.dll", "xinput1_4.dll", "d3d11.dll",
+            "dxgi.dll", "opengl32.dll", "dbghelp.dll", "version.dll"
+        };
+
+        std::string fileName = lowerPath;
+        size_t lastSlash = fileName.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            fileName = fileName.substr(lastSlash + 1);
+        }
+
+        for (const auto& sysFile : systemFiles) {
+            if (fileName == ToLower(sysFile)) {
+                return true;
+            }
+        }
+
+        return false;
+        };
+    auto IsSuspiciousHiddenModule = [](const std::string& modulePath) -> bool {
+        std::string lowerPath = ToLower(modulePath);
+
+        static const std::vector<std::string> executableExtensions = {
+            ".dll", ".exe", ".node"
+        };
+
+        bool isExecutable = false;
+        for (const auto& ext : executableExtensions) {
+            if (lowerPath.length() >= ext.length() &&
+                lowerPath.substr(lowerPath.length() - ext.length()) == ext) {
+                isExecutable = true;
+                break;
+            }
+        }
+        if (!isExecutable) return false;
+
+        std::string fileName = lowerPath;
+        size_t lastSlash = fileName.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            fileName = fileName.substr(lastSlash + 1);
+        }
+
+        static const std::vector<std::string> cheatPatterns = {
+            "dayzint", "cheat", "hack", "inject", "trigger", "aimbot",
+            "wallhack", "esp", "memory", "trainer", "loader"
+        };
+
+        for (const auto& pattern : cheatPatterns) {
+            if (fileName.find(pattern) != std::string::npos) {
+                return true;
+            }
+        }
+
+        static const std::vector<std::string> suspiciousPaths = {
+            "\\desktop\\", "\\downloads\\", "\\documents\\",
+            "\\cheats\\", "\\hacks\\", "\\trainers\\",
+            "c:\\users\\", "d:\\users\\"
+        };
+
+        for (const auto& path : suspiciousPaths) {
+            if (lowerPath.find(path) != std::string::npos) {
+                return true;
+            }
+        }
+
+        return false;
+        };
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, currentPid);
+    if (hSnapshot != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 me = { sizeof(me) };
+        if (Module32First(hSnapshot, &me)) {
+            do {
+                if (me.th32ProcessID == currentPid) {
+                    std::string modulePath = WideStringToString(me.szExePath);
+                    if (!IsSystemModule(modulePath)) {
+                        toolhelpModules.insert(ToLower(modulePath));
+                    }
+                }
+            } while (Module32Next(hSnapshot, &me));
+        }
+        CloseHandle(hSnapshot);
+    }
+
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    if (EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded)) {
+        for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            char modName[MAX_PATH];
+            if (GetModuleFileNameA(hMods[i], modName, sizeof(modName))) {
+                std::string modulePath = modName;
+                if (!IsSystemModule(modulePath)) {
+                    enumModules.insert(ToLower(modulePath));
+                }
+            }
+        }
+    }
+    // Проверяем модули из EnumProcessModules, которых нет в Toolhelp32
+    for (const auto& mod : enumModules) {
+        if (toolhelpModules.find(mod) == toolhelpModules.end()) {
+            if (IsSuspiciousHiddenModule(mod) && !IsSystemModule(mod)) {
+                Log("[WARNING HOOK] HIDDEN SUSPICIOUS MODULE: " + mod);
+            }
+        }
+    }
+
+    // Проверяем модули из Toolhelp32, которых нет в EnumProcessModules
+    for (const auto& mod : toolhelpModules) {
+        if (enumModules.find(mod) == enumModules.end()) {
+            if (IsSuspiciousHiddenModule(mod) && !IsSystemModule(mod)) {
+                Log("[WARNING HOOK] HIDDEN SUSPICIOUS MODULE (Toolhelp only): " + mod);
+            }
+        }
+    }
+}
+void DetectExternalCheatProcesses() {
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+
+    auto IsCheatProcess = [](const std::string& processName, const std::string& processPath) -> bool {
+        std::string lowerName = ToLower(processName);
+        std::string lowerPath = ToLower(processPath);
+
+        if (lowerPath.find("\\windows\\") != std::string::npos ||
+            lowerPath.find("\\program files") != std::string::npos ||
+            lowerPath.find("\\steam\\") != std::string::npos) {
+            return false;
+        }
+
+        static const std::vector<std::string> cheatPatterns = {
+            "dayzint", "cheat", "hack", "inject", "trigger", "aimbot",
+            "wallhack", "esp", "memory", "trainer", "loader"
+        };
+
+        for (const auto& pattern : cheatPatterns) {
+            if (lowerName.find(pattern) != std::string::npos ||
+                lowerPath.find(pattern) != std::string::npos) {
+                return true;
+            }
+        }
+
+        return false;
+        };
+
+    if (Process32First(hSnapshot, &pe)) {
+        do {
+            std::string processName = WideStringToString(pe.szExeFile);
+
+            if (_stricmp(processName.c_str(), "DayZ_x64.exe") == 0) continue;
+
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+            if (hProcess) {
+                char processPath[MAX_PATH];
+                if (GetModuleFileNameExA(hProcess, NULL, processPath, MAX_PATH)) {
+                    if (IsCheatProcess(processName, processPath)) {
+
+                        std::string fileHash = CalculateFileSHA256Safe(processPath);
+                        Log("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + std::string(processPath) + " SHA256: " + fileHash);
+                        StartSightImgDetection("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + std::string(processPath) + " SHA256: " + fileHash);
+                    }
+                }
+                CloseHandle(hProcess);
+            }
+        } while (Process32Next(hSnapshot, &pe));
+    }
+
+    CloseHandle(hSnapshot);
+}
+#pragma endregion
+#pragma region PcPlayer
+std::string hwid = "---";
+static std::string BuildMonitorsCompactString() {
+    std::ostringstream out;
+    DISPLAY_DEVICEA dd;
+    ZeroMemory(&dd, sizeof(dd));
+    dd.cb = sizeof(dd);
+
+    bool addedAny = false;
+    for (DWORD i = 0; EnumDisplayDevicesA(nullptr, i, &dd, 0); ++i) {
+        DEVMODEA dm;
+        ZeroMemory(&dm, sizeof(dm));
+        dm.dmSize = sizeof(dm);
+
+        if (dd.DeviceName && dd.DeviceName[0]) {
+            if (EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm)) {
+                uint64_t pixels = uint64_t(dm.dmPelsWidth) * uint64_t(dm.dmPelsHeight);
+                if (addedAny) out << "|";
+                out << pixels << ":" << dm.dmPelsWidth << "x" << dm.dmPelsHeight << ":"
+                    << (dm.dmDisplayFrequency ? dm.dmDisplayFrequency : 0);
+                addedAny = true;
+            }
+        }
+        ZeroMemory(&dd, sizeof(dd));
+        dd.cb = sizeof(dd);
+    }
+    return addedAny ? out.str() : "";
+}
+std::string GetSMBIOS_UUID() {
+    const DWORD BufferSize = 4096;
+    std::vector<BYTE> buffer(BufferSize);
+    DWORD retSize = GetSystemFirmwareTable('RSMB', 0, buffer.data(), BufferSize);
+    if (retSize == 0 || retSize > BufferSize) return "";
+
+    for (size_t i = 0; i + 24 <= retSize; ++i) {
+        if (buffer[i] == 0x01 && buffer[i + 1] >= 0x12) {
+            std::stringstream ss;
+            for (int j = 8; j < 24; ++j) {
+                ss << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i + j];
+            }
+            return ss.str();
+        }
+    }
+    return "";
+}
+std::string GetSIDForUser(const std::wstring& userName) {
+    BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
+    DWORD sidSize = sizeof(sidBuffer);
+    WCHAR domainName[256];
+    DWORD domainSize = (DWORD)(sizeof(domainName) / sizeof(WCHAR));
+    SID_NAME_USE sidType;
+
+    BOOL success = LookupAccountNameW(nullptr, userName.c_str(), sidBuffer, &sidSize, domainName, &domainSize, &sidType);
+    if (!success) return "";
+
+    LPSTR stringSid = nullptr;
+    if (ConvertSidToStringSidA(sidBuffer, &stringSid)) {
+        std::string sidStr(stringSid);
+        LocalFree(stringSid);
+        return sidStr;
+    }
+    return "";
+}
+std::string GetPrimaryUserSID() {
+    DWORD level = 0;
+    DWORD prefmaxlen = MAX_PREFERRED_LENGTH;
+    DWORD entriesread = 0, totalentries = 0, resume_handle = 0;
+    USER_INFO_0* pBuf = nullptr;
+
+    NET_API_STATUS nStatus = NetUserEnum(nullptr, level, FILTER_NORMAL_ACCOUNT, (LPBYTE*)&pBuf,
+        prefmaxlen, &entriesread, &totalentries, &resume_handle);
+
+    std::vector<std::string> userSIDs;
+    if (nStatus == NERR_Success || nStatus == ERROR_MORE_DATA) {
+        for (DWORD i = 0; i < entriesread; ++i) {
+            std::wstring wUserName = pBuf[i].usri0_name;
+            std::string sid = GetSIDForUser(wUserName);
+            if (!sid.empty() && sid.find("-500") == std::string::npos) 
+                userSIDs.push_back(sid);
+        }
+        if (pBuf) NetApiBufferFree(pBuf);
+    }
+
+    std::sort(userSIDs.begin(), userSIDs.end());
+    for (const auto& sid : userSIDs) {
+        if (sid.find("-1000") != std::string::npos) return sid;
+    }
+    return !userSIDs.empty() ? userSIDs.front() : "";
+}
+unsigned GetCpuMaxMHzNormalized() {
+    int r[4] = { 0 };
+    __cpuid(r, 0x16);
+    unsigned baseMHz = (unsigned)r[0];
+    unsigned maxMHz = (unsigned)r[1];
+    unsigned freq = (maxMHz != 0 ? maxMHz : baseMHz);
+    return (freq / 100) * 100;
+}
+uint64_t ReadRamMiBNormalized() {
+    MEMORYSTATUSEX ms{ sizeof(ms) };
+    if (GlobalMemoryStatusEx(&ms))
+        return (ms.ullTotalPhys / (1024ull * 1024ull)); // уже в MiB
+    return 0;
+}
+uint64_t SumFixedDisksGiBNormalized() {
+    char buf[4096];
+    DWORD n = GetLogicalDriveStringsA(sizeof(buf), buf);
+    if (!n || n > sizeof(buf)) return 0;
+
+    uint64_t sumBytes = 0;
+    for (char* p = buf; *p; p += lstrlenA(p) + 1) {
+        if (GetDriveTypeA(p) != DRIVE_FIXED) continue;
+        ULARGE_INTEGER totalBytes{};
+        if (GetDiskFreeSpaceExA(p, nullptr, &totalBytes, nullptr))
+            sumBytes += totalBytes.QuadPart;
+    }
+    return (sumBytes / (1024ull * 1024 * 1024 * 10)) * 10; // округление до 10 ГБ
+}
+void GenerateStableHWID() {
+    try {
+        std::string smbios = GetSMBIOS_UUID();
+        std::string primarySID = GetPrimaryUserSID();
+        unsigned cpu = GetCpuMaxMHzNormalized();
+        uint64_t ram = ReadRamMiBNormalized();
+        uint64_t dsk = SumFixedDisksGiBNormalized();
+
+        std::ostringstream raw;
+        if (!smbios.empty()) raw << "B:" << smbios << "|";
+        if (!primarySID.empty()) raw << "S:" << primarySID << "|";
+        if (cpu) raw << "CPUFREQ:" << cpu << "MHz|";
+        if (ram) raw << "RAM:" << ram << "|";
+        if (dsk) raw << "DSK:" << dsk << "|";
+
+        std::string monitorsCompact = BuildMonitorsCompactString();
+        if (!monitorsCompact.empty()) raw << monitorsCompact << "|";
+        if (GameProjectdayzzona) {
+            hwid = "---";
+        }
+        else
+        {
+            hwid = raw.str();
+            if (hwid.empty()) hwid = "FallbackHWID";
+            Log("[LOGEN] HWID: " + hwid);
+        }
+    }
+    catch (...) {
+        Log("[LOGEN] HWID: HWID_ERROR");
+    }
+}
+void HWID() {
+    __try {
+        GenerateStableHWID();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+#pragma endregion
+std::unique_ptr<VulkanDetector> g_vulkanDetector;
+void InitializeVulkanDetection() {
+    if (!g_vulkanDetector) {
+        g_vulkanDetector = std::make_unique<VulkanDetector>();
+
+        // Настройка конфигурации
+        VulkanDetectorConfig config;
+        config.enableHookDetection = true;
+        config.enableModuleScan = true;
+        config.enableSignatureCheck = true;
+        config.enableScreenshotOnDetection = true;
+        config.hookConfidenceThreshold = 80;
+
+        // Специфичные для DayZ настройки
+        config.whitelistedModules.push_back("dayz_x64.exe");
+        config.whitelistedPaths.push_back("\\dayz\\");
+        config.whitelistedPaths.push_back("\\steamapps\\common\\dayz");
+
+        g_vulkanDetector->SetConfig(config);
+
+        if (g_vulkanDetector->Initialize()) {
+            g_vulkanDetector->Start();
+            Log("[LOGEN] Vulkan detector started for DayZ");
+        }
+    }
+}
+std::atomic<bool> g_vulkanMonitorRunning{ false };
+std::thread g_vulkanMonitorThread;
+void CheckProcessForVulkan(HANDLE hProcess, const std::string& processName, DWORD pid) {
+    HMODULE hMods[256];
+    DWORD cbNeeded;
+
+    // ===== RATE LIMITER =====
+    static std::map<std::string, uint64_t> lastLogTime;
+    static std::map<std::string, int> logCounter;
+    static std::mutex rateMutex;
+    const uint64_t COOLDOWN_MS = 60000; 
+    const int MAX_SCREENSHOTS_PER_HOUR = 5; 
+
+    auto ShouldLog = [&](const std::string& key, const std::string& hash, bool takeScreenshot = false) -> bool {
+        std::lock_guard<std::mutex> lock(rateMutex);
+        uint64_t now = GetTickCount64();
+
+        std::string fullKey = key + "_" + hash;
+        auto it = lastLogTime.find(fullKey);
+
+        if (it == lastLogTime.end() || (now - it->second) > COOLDOWN_MS) {
+            lastLogTime[fullKey] = now;
+            logCounter[fullKey] = 1;
+            static int screenshotCount = 0;
+            static uint64_t screenshotHourStart = now;
+
+            if (takeScreenshot) {
+                if (now - screenshotHourStart > 3600000) {
+                    screenshotCount = 0;
+                    screenshotHourStart = now;
+                }
+                if (screenshotCount < MAX_SCREENSHOTS_PER_HOUR) {
+                    screenshotCount++;
+                    return true; 
+                }
+                return false; 
+            }
+            return true;
+        }
+
+        logCounter[fullKey]++;
+        return false; 
+        };
+
+    auto IsWhitelistedProcess = [](const std::string& name) -> bool {
+        std::string lowerName = name;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+        size_t lastSlash = lowerName.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            lowerName = lowerName.substr(lastSlash + 1);
+        }
+
+        static const std::set<std::string> whitelist = {
+            "csrss.exe", "wininit.exe", "services.exe", "lsass.exe",
+            "svchost.exe", "dwm.exe", "conhost.exe", "ctfmon.exe",
+            "taskhostw.exe", "runtimebroker.exe", "searchhost.exe",
+            "sihost.exe", "fontdrvhost.exe", "smss.exe", "system",
+            "system idle process", "winlogon.exe",
+            "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe",
+            "discord.exe", "discordptb.exe", "discordcanary.exe",
+           Name_Game, "dayz.exe",
+        Name_Dll
+        };
+
+        return whitelist.find(lowerName) != whitelist.end();
+        };
+    auto IsSystemPath = [](const std::wstring& path) -> bool {
+        std::wstring lower = path;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        if (lower.find(L"\\windows\\") == 0 ||
+            lower.find(L"\\program files") == 0 ||
+            lower.find(L"\\program files (x86)") == 0 ||
+            lower.find(L"\\system32\\") != std::wstring::npos ||
+            lower.find(L"\\syswow64\\") != std::wstring::npos) {
+            return true;
+        }
+        if (lower.find(L"\\windowsapps\\") != std::wstring::npos) {
+            return true;
+        }
+
+        return false;
+        };
+    if (IsWhitelistedProcess(processName)) {
+        return;
+    }
+
+    if (!EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        return;
+    }
+
+    for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+        WCHAR modPathW[MAX_PATH] = { 0 };
+        if (GetModuleFileNameExW(hProcess, hMods[i], modPathW, MAX_PATH) == 0) {
+            continue;
+        }
+        if (IsSystemPath(modPathW)) {
+            continue;
+        }
+        char modPathUTF8[MAX_PATH * 2] = { 0 };
+        WideCharToMultiByte(CP_UTF8, 0, modPathW, -1, modPathUTF8, sizeof(modPathUTF8), NULL, NULL);
+        std::wstring modPathStr = modPathW;
+        size_t lastSlash = modPathStr.find_last_of(L"\\/");
+        std::wstring fileName = (lastSlash != std::wstring::npos) ?
+            modPathStr.substr(lastSlash + 1) : modPathStr;
+
+        std::transform(fileName.begin(), fileName.end(), fileName.begin(), ::towlower);
+        if (fileName == L"vulkan-1.dll") {
+            std::wstring lowerPath = modPathStr;
+            std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+
+            if (lowerPath.find(L"discord") != std::wstring::npos) {
+                continue;
+            }
+            std::string hash = CalculateFileSHA256Safe(modPathUTF8);
+            std::string key = "vulkan_non_system_" + std::string(modPathUTF8);
+
+            if (ShouldLog(key, hash, true)) { 
+                Log("[VEH] Vulkan detected in process: " + processName +" (PID: " + std::to_string(pid) + ")" + " | Path: " + std::string(modPathUTF8) + " | SHA256: " + hash);
+                StartSightImgDetection("[VEH] Vulkan process: " + processName);
+            }
+            continue;
+        }
+
+        // ===== Подозрительные ключевые слова =====
+        bool hasSuspiciousKeyword =
+            fileName.find(L"hook") != std::wstring::npos ||
+            fileName.find(L"inject") != std::wstring::npos ||
+            fileName.find(L"cheat") != std::wstring::npos ||
+            fileName.find(L"hack") != std::wstring::npos;
+
+        if (hasSuspiciousKeyword) {
+            // Игнорируем, если это Discord hook (легитимный)
+            if (fileName.find(L"discord") != std::wstring::npos) {
+                continue;
+            }
+
+            std::string hash = CalculateFileSHA256Safe(modPathUTF8);
+            std::string key = "suspicious_" + std::string(modPathUTF8);
+
+            // Для подозрительных модулей логируем, но скриншоты делаем реже
+            bool takeScreenshot = (fileName.find(L"hook.dll") != std::wstring::npos); // только hook.dll
+            if (ShouldLog(key, hash, takeScreenshot)) {
+                Log("[VEH] Suspicious module in " + processName + ": " + modPathUTF8 + " | SHA256: " + hash);
+
+                if (takeScreenshot) {
+                   // StartSightImgDetection("[VEH] Suspicious module: " + std::string(modPathUTF8) + " | SHA256: " + hash);
+                }
+            }
+            continue;
+        }
+    }
+}
+void VulkanProcessMonitor() {
+    Log("[LOGEN] Vulkan process monitor started");
+
+    std::set<DWORD> knownPids;
+
+    while (g_vulkanMonitorRunning) {
+        try {
+            HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (hSnapshot != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32W pe; // Используем W версию
+                pe.dwSize = sizeof(pe);
+
+                if (Process32FirstW(hSnapshot, &pe)) {
+                    do {
+                        if (pe.th32ProcessID == GetCurrentProcessId()) continue;
+
+                        // Конвертируем wide string в string
+                        std::string processName = WideStringToString(pe.szExeFile);
+
+                        if (knownPids.find(pe.th32ProcessID) == knownPids.end()) {
+                            knownPids.insert(pe.th32ProcessID);
+
+                            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+
+                            if (hProcess) {
+                                CheckProcessForVulkan(hProcess, processName, pe.th32ProcessID);
+                                CloseHandle(hProcess);
+                            }
+                        }
+                    } while (Process32NextW(hSnapshot, &pe));
+                }
+                CloseHandle(hSnapshot);
+            }
+
+            static uint64_t lastCleanup = GetTickCount64();
+            uint64_t now = GetTickCount64();
+            if (now - lastCleanup > 60000) {
+                knownPids.clear();
+                lastCleanup = now;
+            }
+
+            Sleep(15000);
+        }
+        catch (...) {
+            Sleep(10000);
+        }
+    }
+}
+void StartVulkanMonitor() {
+    if (g_vulkanMonitorRunning.exchange(true)) return;
+
+    try {
+        g_vulkanMonitorThread = std::thread(VulkanProcessMonitor);
+        Log("[LOGEN] Vulkan process monitor thread created");
+    }
+    catch (const std::exception& e) {
+        Log("[LOGEN] Failed to start Vulkan monitor: " + std::string(e.what()));
+        g_vulkanMonitorRunning = false;
+    }
+}
+void StopVulkanMonitor() {
+    if (!g_vulkanMonitorRunning.exchange(false)) return;
+
+    if (g_vulkanMonitorThread.joinable()) {
+        g_vulkanMonitorThread.join();
+    }
+}
+
+void LogHardwareInfo() {
+    int cpuInfo[4] = { -1 };
+    char cpuBrand[0x40] = { 0 };
+
+    __cpuid(cpuInfo, 0x80000002);
+    memcpy(cpuBrand, cpuInfo, sizeof(cpuInfo));
+
+    __cpuid(cpuInfo, 0x80000003);
+    memcpy(cpuBrand + 16, cpuInfo, sizeof(cpuInfo));
+
+    __cpuid(cpuInfo, 0x80000004);
+    memcpy(cpuBrand + 32, cpuInfo, sizeof(cpuInfo));
+
+   // LogFormat("[VEH] CPU: %s", cpuBrand);
+
+    // Информация о памяти
+    MEMORYSTATUSEX memStatus;
+    memStatus.dwLength = sizeof(memStatus);
+    GlobalMemoryStatusEx(&memStatus);
+
+   // LogFormat("[VEH] RAM: Total: %lluMB Available: %lluMB", memStatus.ullTotalPhys / (1024 * 1024), memStatus.ullAvailPhys / (1024 * 1024));
+}
+void PerformCriticalActions(KernelCheatDetector::CheatPattern pattern) {
+    switch (pattern) {
+    case KernelCheatDetector::PATTERN_DMA_BURST:
+        LogHardwareInfo();
+        break;
+    default:
+        break;
+    }
+}
+void LogOperationStatistics() {
+    // Собираем статистику по всем операциям
+    std::stringstream stats;
+    stats << "[VEH] ";
+
+    // Получаем время системы
+    SYSTEMTIME sysTime;
+    GetLocalTime(&sysTime);
+    stats << "Time: " << sysTime.wHour << ":" << sysTime.wMinute << ":" << sysTime.wSecond;
+
+    // Мониторинг загруженности CPU
+    static ULARGE_INTEGER lastCPU, lastSysCPU, lastUserCPU;
+    static int numProcessors;
+    static bool initialized = false;
+
+    if (!initialized) {
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+        numProcessors = sysInfo.dwNumberOfProcessors;
+
+        FILETIME ftime, fsys, fuser;
+        GetSystemTimeAsFileTime(&ftime);
+        memcpy(&lastCPU, &ftime, sizeof(FILETIME));
+
+        GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
+        memcpy(&lastSysCPU, &fsys, sizeof(FILETIME));
+        memcpy(&lastUserCPU, &fuser, sizeof(FILETIME));
+
+        initialized = true;
+    }
+
+    FILETIME ftime, fsys, fuser;
+    ULARGE_INTEGER now, sys, user;
+
+    GetSystemTimeAsFileTime(&ftime);
+    memcpy(&now, &ftime, sizeof(FILETIME));
+
+    GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
+    memcpy(&sys, &fsys, sizeof(FILETIME));
+    memcpy(&user, &fuser, sizeof(FILETIME));
+
+    double percent = (double)((sys.QuadPart - lastSysCPU.QuadPart) +
+        (user.QuadPart - lastUserCPU.QuadPart));
+    percent /= (now.QuadPart - lastCPU.QuadPart);
+    percent /= numProcessors;
+
+    stats << " | CPU Usage: " << (percent * 100) << "%";
+
+    lastCPU = now;
+    lastUserCPU = user;
+    lastSysCPU = sys;
+
+    //Log(stats.str());
+}
+void LogCriticalDetection(KernelCheatDetector::CheatPattern pattern, const std::string& processName, DWORD pid) {
+    static SmartRateLimiter criticalRateLimiter;
+
+    std::string key = "CRITICAL_" + std::to_string(pid);
+    if (!criticalRateLimiter.ShouldLog(key, 120000)) { // Раз в 2 минуты
+        return;
+    }
+
+    std::stringstream criticalLog;
+    criticalLog << "[VEH] CRITICAL: ";
+
+    switch (pattern) {
+    case KernelCheatDetector::PATTERN_DMA_BURST:
+        criticalLog << "DMA CHEAT DETECTED! Hardware-level memory access.";
+        break;
+    case KernelCheatDetector::PATTERN_KERNEL_DELAY:
+        criticalLog << "KERNEL DRIVER CHEAT DETECTED! Suspicious kernel-mode activity.";
+        break;
+    default:
+        return;
+    }
+
+    criticalLog << " | Target: " << processName;
+
+    // Системная информация
+    OSVERSIONINFOEX osvi;
+    ZeroMemory(&osvi, sizeof(OSVERSIONINFOEX));
+    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+
+#pragma warning(push)
+#pragma warning(disable: 4996)
+    if (GetVersionEx((OSVERSIONINFO*)&osvi)) {
+#pragma warning(pop)
+        criticalLog << " | OS: Windows " << osvi.dwMajorVersion << "." << osvi.dwMinorVersion;
+    }
+
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    criticalLog << " | CPU Cores: " << sysInfo.dwNumberOfProcessors;
+
+    MEMORYSTATUSEX memStatus;
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus)) {
+        criticalLog << " | RAM: " << (memStatus.ullTotalPhys / (1024 * 1024 * 1024)) << "GB";
+    }
+
+    Log(criticalLog.str());
+    StartSightImgDetection(criticalLog.str());
+    PerformCriticalActions(pattern);
+}
+void KERNEL() {
+    static uint64_t lastAggregationTime = 0;
+    static uint64_t lastStatsLogTime = 0;
+    static uint64_t lastCriticalScreenshotTime = 0;
+    static std::map<std::string, uint64_t> lastCriticalLog;
+
+    uint64_t currentTime = GetTickCount64();
+    DWORD pid = GetCurrentProcessId();
+
+    if (!g_simpleDetector.ShouldMonitorProcess(pid)) {
+        return;
+    }
+
+    char processName[MAX_PATH] = { 0 };
+    GetModuleBaseNameA(GetCurrentProcess(), NULL, processName, MAX_PATH);
+    std::string exeName = processName;
+    std::string processKey = exeName + "_" + std::to_string(pid);
+
+    // Основной анализ (внутри уже есть логирование и скриншоты)
+    g_simpleDetector.AnalyzeAdvancedPatterns();
+
+    // Дополнительная логика для КРИТИЧЕСКИХ детекций
+    auto pattern = g_simpleDetector.AnalyzePatterns(); // Быстрая проверка
+
+    if (pattern == KernelCheatDetector::PATTERN_DMA_BURST ||
+        pattern == KernelCheatDetector::PATTERN_KERNEL_DELAY) {
+
+        // Логирование критических детекций (раз в 2 минуты)
+        if (lastCriticalLog.find(processKey) == lastCriticalLog.end() ||
+            currentTime - lastCriticalLog[processKey] > 120000) {
+
+            LogCriticalDetection(pattern, exeName, pid);
+            lastCriticalLog[processKey] = currentTime;
+
+            // Дополнительный скриншот для критических детекций
+            if (currentTime - lastCriticalScreenshotTime > 120000) {
+                lastCriticalScreenshotTime = currentTime;
+            }
+        }
+    }
+
+    // Агрегация логов (раз в минуту)
+    if (g_config.enableAggregation && currentTime - lastAggregationTime > 60000) {
+        g_detectionAggregator.ProcessAndLog(false);
+        lastAggregationTime = currentTime;
+    }
+
+    // Статистика (раз в 5 минут)
+    if (currentTime - lastStatsLogTime > 300000) {
+        int total = g_totalDetections.load();
+        int logged = g_loggedDetections.load();
+        int ratio = (total > 0) ? (logged * 100) / total : 0;
+
+       // Log("[VEH] STATS: Total detections: " + std::to_string(total) +" | Logged: " + std::to_string(logged) + " | Ratio: " + std::to_string(ratio) + "%");
+
+        lastStatsLogTime = currentTime;
+
+        // Периодическая информация о системе
+        static int statsCounter = 0;
+        if (++statsCounter % 3 == 0) { // Каждые 15 минут
+            LogHardwareInfo();
+            LogOperationStatistics();
+        }
+    }
+}
+
+MemoryCleaner g_memoryCleaner(5);
+void StartMemoryCleaner() {
+    g_memoryCleaner.Start();
+}
+void StopMemoryCleaner() {
+    g_memoryCleaner.Stop();
+}
+std::atomic<bool> g_cleanerRunning{ false };
+std::thread g_cleanerThread;
+void CleanupAccumulatedData() {
+    //Log("[LOGEN] Running periodic cleanup of accumulated data...");
+
+    // 1. Очистка VulkanDetector
+    if (g_vulkanDetector) {
+        g_vulkanDetector->ClearDetectedHooks();  // старая очистка
+        g_vulkanDetector->CleanupOldData();      // НОВАЯ очистка
+    }
+
+    // 2. Очистка BehaviorDetector (g_trackedTargets)
+    BD_ResetSuspicionMetrics(); // Это очищает g_trackedTargets
+
+    // 3. Очистка KeyToggleMonitor
+    if (g_keyMonitor) {
+        g_keyMonitor->ClearAllData();
+        g_keyMonitor->ResetStats();
+        Log("[LOGEN] KeyToggleMonitor data cleared");
+    }
+
+    // 4. Очистка InvisibleOverlay (если доступен)
+    if (g_screenshotCapturer.IsOverlayUnderAttack()) {
+        // Не очищаем, но можем залогировать
+    }
+
+    Log("[LOGEN] Periodic cleanup completed");
+}
+void StartCleanupAccumulatedData() {
+    __try {
+        CleanupAccumulatedData();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+void CleanerThreadFunction() {
+    const auto CLEANUP_INTERVAL = std::chrono::minutes(5);
+
+    while (g_cleanerRunning) {
+        auto start = std::chrono::steady_clock::now();
+
+        StartCleanupAccumulatedData();
+        if (g_simpleDetector.IsValid()) {
+            uint64_t currentTimeMs = GetTickCount64();
+            g_simpleDetector.CleanupOldOperationStats(currentTimeMs);
+        }
+        auto end = std::chrono::steady_clock::now();
+        auto elapsed = end - start;
+
+        if (elapsed < CLEANUP_INTERVAL) {
+            std::this_thread::sleep_for(CLEANUP_INTERVAL - elapsed);
+        }
+    }
+}
+void StartCleanerThread() {
+    if (g_cleanerRunning.exchange(true)) return;
+
+    try {
+        g_cleanerThread = std::thread(CleanerThreadFunction);
+        Log("[LOGEN] Cleaner thread created");
+    }
+    catch (const std::exception& e) {
+        Log("[LOGEN] Failed to start cleaner thread: " + std::string(e.what()));
+        g_cleanerRunning = false;
+    }
+}
+void StopCleanerThread() {
+    if (!g_cleanerRunning.exchange(false)) return;
+
+    if (g_cleanerThread.joinable()) {
+        g_cleanerThread.join();
+    }
+    Log("[LOGEN] Cleaner thread stopped");
+}
+void ForceFullSystemReset() {
+    Log("[LOGEN] ===== FORCE RESET: START =====");
+    BD_ResetSuspicionMetrics(); 
+    BD_ClearLogData();
+    if (g_keyMonitor) {
+        g_keyMonitor->ClearAllData(); 
+        g_keyMonitor->ResetStats();   
+    }
+    if (g_vulkanDetector) {
+        g_vulkanDetector->ClearDetectedHooks();
+        g_vulkanDetector->CleanupOldData(); 
+    }
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        messageCache.clear();
+    }
+    Log("[LOGEN] ===== FORCE RESET: END =====");
+}
+
+void Cycle() {
+    try {
+        int slowCheckCounter = 0;
+        int errorCount = 0;
+        uint64_t lastResetTime = GetTickCount64();
+        static uint64_t lastKernelCleanup = 0;
+        while (true) {
+            try {
+                START_TIMING(ModuleScanCycle);
+                ListLoadedModulesAndReadMemory();
+                END_TIMING(ModuleScanCycle);
+
+                slowCheckCounter++;
+                if (slowCheckCounter >= 3) {
+                    START_TIMING(HiddenModuleDetection);
+                    DetectHiddenModules();
+                    END_TIMING(HiddenModuleDetection);
+
+                    if (slowCheckCounter >= 6) {
+                        START_TIMING(EnhancedModuleCheck);
+                        EnhancedModuleCheck();
+                        END_TIMING(EnhancedModuleCheck);
+
+                        if (slowCheckCounter >= 12) {
+                            START_TIMING(ExternalProcessScan);
+                            DetectExternalCheatProcesses();
+                            END_TIMING(ExternalProcessScan);
+                            slowCheckCounter = 0;
+                        }
+                    }
+                }
+                errorCount = 0;
+                /*
+                if (lastResetTime - lastKernelCleanup > 180000) { // 3 минуты
+                    if (g_simpleDetector.IsValid()) {
+                        g_simpleDetector.CleanupOldOperationStats(lastResetTime);
+                    }
+                    ForceFullSystemReset();
+                    lastKernelCleanup = lastResetTime;
+                }
+                START_TIMING(KernelAnalysis);
+                KERNEL();
+                END_TIMING(KernelAnalysis);
+                if (g_config.enableAggregation) {
+                    g_detectionAggregator.ProcessAndLog(true);
+                }
+                */
+                Sleep(10000);
+                errorCount = 0;
+            }
+            catch (...) {
+                errorCount++;
+                g_simpleDetector.RecordTiming("CYCLE_EXCEPTION", errorCount * 1000.0);
+
+                if (errorCount == 1) Sleep(10000);
+                else if (errorCount == 2) Sleep(30000);
+                else Sleep(60000);
+            }
+        }
+    }
+    catch (...) {}
+}
+void HookIATStart() {
+    __try {
+        HookIAT();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void ListLoadedModulesAndReadMemoryLimitedStart() {
+    __try {
+        ListLoadedModulesAndReadMemoryLimited();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void InitializeMonitoring() {
+    try {
+        g_totalDetections = 0;
+        g_loggedDetections = 0;
+        g_config.logCooldownNormal = 60000;
+        g_config.logCooldownCritical = 30000;
+        g_config.minDetectionsForLog = 3;
+        g_config.enableAggregation = true;
+        g_config.logMissedDetections = true;
+        isLicenseVersion = DetermineAndSetGameProcessNames();
+        if (!isLicenseVersion) {
+            ReadSteamUIDStart();
+        }
+        else {
+            ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
+        }
+        Sleep(1500);
+        HWID();
+        Sleep(1500);
+        try {
+            ListLoadedModulesAndReadMemoryLimitedStart();
+        }
+        catch (...) {}
+        try {
+            HookIATStart();
+        }
+        catch (...) {}
+        Sleep(1500);
+        InfoOut(hwid, Goldberg_UID_SC);
+        Sleep(1500);
+        if (GameProjectdayzzona) {
+            try {
+                std::string injectedProcess = GetInjectedProcessName();
+                std::transform(injectedProcess.begin(), injectedProcess.end(), injectedProcess.begin(), ::tolower);
+                if (injectedProcess == Name_Game2) {
+                    std::thread([]() {
+                        for (int i = 0; i < 60; i++) {
+                            Sleep(1000);
+                            if (i % 60 == 0) {
+                                int remaining = 60 - i;
+                                LogFormat("[LOGEN] StartKeyToggleMonitoring starts in %d:%02d", remaining / 60, remaining % 60);
+                            }
+                        }
+                        Log("[LOGEN] Starting KeyToggleMonitoring...");
+                        StartKeyToggleMonitoring();
+                        Sleep(2000);
+                        while (true) {
+                            Sleep(120000);
+                            if (IsKeyMonitoringActive()) {
+                                Log("[LOGEN] KeyMonitor stats: " + GetKeyMonitorStats());
+                            }
+                        }
+                        }).detach();
+                }
+            }
+            catch (const std::exception& e) {
+                Log("[LOGEN] KeyToggleMonitoring: " + std::string(e.what()));
+            }
+        }
+        try {
+            std::string injectedProcess = GetInjectedProcessName();
+            std::transform(injectedProcess.begin(), injectedProcess.end(), injectedProcess.begin(), ::tolower);
+            if (injectedProcess == Name_Game2) {
+                Log("[LOGEN] SVG START :" + Name_Game2);
+
+                for (int i = 0; i < 240; i++) {
+                    Sleep(1000);
+                    if (i % 60 == 0) {
+                        int remaining = 240 - i;
+                        LogFormat("[LOGEN] Protection starts in %d:%02d", remaining / 60, remaining % 60);
+                    }
+                }
+
+                std::thread([]() {
+                    Log("[LOGEN] Config: Normal CD=" + std::to_string(g_config.logCooldownNormal) + "ms Critical CD=" + std::to_string(g_config.logCooldownCritical) + "ms");
+                    InitializeProtection();
+                    InitAntiCheatTimer();
+                    Sleep(1000);
+                    if (g_screenshotCapturer.IsOverlayUnderAttack()) {
+                        Log("[LOGEN] Overlay debug mode activated due to attack");
+                    }
+                    Sleep(1000);
+                    InitializeVulkanDetection();
+                    Sleep(5000);
+                    StartVulkanMonitor();
+                    // StartCleanerThread();
+                     // StartMemoryCleaner();
+                    while (true) {
+                        try {
+                            InfoOutStatus(hwid, Goldberg_UID_SC);
+                            Sleep(10000);
+                        }
+                        catch (const std::exception& e) {
+                            Log("[ERROR] InfoOutStatus update failed: " + std::string(e.what()));
+                        };
+                    }
+                    }).detach();
+                std::thread([]() {
+                    while (true) {
+                        try {
+                            Sleep(180000);
+                            ForceFullSystemReset();
+                        }
+                        catch (const std::exception& e) {
+                            Log("[ERROR] ForceFullSystemReset update failed: " + std::string(e.what()));
+                        };
+                    }
+                    }).detach();
+            }
+        }
+        catch (const std::exception& e) {
+            Log("[LOGEN] injectedProcess: " + std::string(e.what()));
+        }
+        Sleep(1000);
+        Cycle();
+    }
+    catch (...) {}
+}
+DWORD WINAPI SafeInitialize(LPVOID) {
+    __try {
+        InitializeMonitoring();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { }
+    return 0;
+}
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
+    if (ulReason == DLL_PROCESS_ATTACH) {
+        g_hModule = hModule;
+        DisableThreadLibraryCalls(hModule);
+
+        HANDLE hThread = CreateThread(nullptr, 0, SafeInitialize, nullptr, 0, nullptr);
+        if (hThread) CloseHandle(hThread);
+    }
+    else if (ulReason == DLL_PROCESS_DETACH) {
+        StopMemoryCleaner();
+        StopCleanerThread();
+        UnhookIAT();
+        UnhookAdditionalAPI();
+    }
+    return TRUE;
+}
