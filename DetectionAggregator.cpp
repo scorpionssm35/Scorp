@@ -9,8 +9,8 @@ AntiCheatConfig g_config;
 std::atomic<int> g_totalDetections(0);
 std::atomic<int> g_loggedDetections(0);
 DetectionAggregator g_detectionAggregator;
-KernelCheatDetector g_simpleDetector(Name_Game, true); 
-
+//KernelCheatDetector g_simpleDetector(Name_Game, true); 
+std::unique_ptr<KernelCheatDetector> g_simpleDetector;
 // =================== Реализация структур ===================
 AggStats::AggStats() : count(0), maxConfidence(0.0), firstTime(0), lastTime(0) {}
 
@@ -205,7 +205,7 @@ ScopedTimer::~ScopedTimer() {
     auto end = std::chrono::high_resolution_clock::now();
     double duration = std::chrono::duration<double, std::micro>(end - m_start).count();
 
-    if (g_simpleDetector.IsValid()) {
-        g_simpleDetector.RecordTiming(m_operation, duration);
+    if (g_simpleDetector && g_simpleDetector->IsValid()) {
+        g_simpleDetector->RecordTiming(m_operation, duration);
     }
 }

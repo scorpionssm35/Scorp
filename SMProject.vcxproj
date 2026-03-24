@@ -151,7 +151,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="AntiCheatTimer.h" />
     <ClInclude Include="BehaviorDetector.h" />
     <ClInclude Include="DetectionAggregator.h" />
     <ClInclude Include="dllmain.h" />
@@ -172,9 +171,6 @@
     <ClInclude Include="VulkanDetector.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="AntiCheatTimer.cpp">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
-    </ClCompile>
     <ClCompile Include="BehaviorDetector.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>

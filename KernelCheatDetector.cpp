@@ -103,7 +103,7 @@ bool KernelCheatDetector::PerformHeuristicScanUnsafe()
 // ====================== PUBLIC FUNCTIONS (без __try) ======================
 void KernelCheatDetector::CreateBaselines()
 {
-    std::vector<std::string> critical = { "dayz_x64.exe", "enfusion.dll" };
+    std::vector<std::string> critical = { Name_Game, Name_Dll };
 
     for (const auto& modName : critical)
     {
@@ -128,8 +128,7 @@ void KernelCheatDetector::CreateBaselines()
 
             m_baselines.push_back(bl);
 
-            LogFormat("[VEH] Baseline: %s | .text=0x%llX | size=%zu | hash=0x%llX",
-                modName.c_str(), textStart, textSize, hash);
+            LogFormat("[LOGEN] Baseline: %s | .text=0x%llX | size=%zu | hash=0x%llX", modName.c_str(), textStart, textSize, hash);
         }
     }
     m_initialized = !m_baselines.empty();
@@ -189,7 +188,7 @@ KernelCheatDetector::KernelCheatDetector(const std::string& /*targetGameProcess*
 {
     m_highResTimer = QueryPerformanceFrequency(&m_frequency) != 0;
     CreateBaselines();
-    Log("[VEH] KernelCheatDetector (integrity + heuristic) initialized");
+    Log("[LOGEN] KernelCheatDetector (integrity + heuristic) initialized");
 }
 
 KernelCheatDetector::~KernelCheatDetector()
@@ -204,5 +203,5 @@ void KernelCheatDetector::ResetCache()
     m_initialized = false;
     m_lastIntegrityCheck = 0;
     CreateBaselines();
-    Log("[VEH] Cache fully reset + baselines recreated");
+   // Log("[VEH] Cache fully reset + baselines recreated");
 }

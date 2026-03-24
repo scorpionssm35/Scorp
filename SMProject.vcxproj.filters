@@ -63,9 +63,6 @@
     <ClInclude Include="KeyToggleMonitor.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
-    <ClInclude Include="AntiCheatTimer.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
     <ClInclude Include="VulkanDetector.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
@@ -111,9 +108,6 @@
       <Filter>Исходные файлы</Filter>
     </ClCompile>
     <ClCompile Include="KeyToggleMonitor.cpp">
-      <Filter>Исходные файлы</Filter>
-    </ClCompile>
-    <ClCompile Include="AntiCheatTimer.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
     <ClCompile Include="VulkanDetector.cpp">

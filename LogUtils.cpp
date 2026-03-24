@@ -465,9 +465,6 @@ void LogTest(const std::string& message) {
         // Silent fail
     }
 }
-
-
-
 #include <unordered_map>
 std::unordered_map<size_t, CachedMessage> messageCache;
 std::mutex cacheMutex;

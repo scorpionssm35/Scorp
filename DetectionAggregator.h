@@ -75,7 +75,8 @@ extern std::atomic<int> g_totalDetections;
 extern std::atomic<int> g_loggedDetections;
 extern DetectionAggregator g_detectionAggregator;
 extern std::string Name_Game;
-extern KernelCheatDetector g_simpleDetector;
+//extern KernelCheatDetector g_simpleDetector;
+extern std::unique_ptr<KernelCheatDetector> g_simpleDetector;
 
 // =================== Вспомогательные классы ===================
 class ScopedTimer {
@@ -90,6 +91,6 @@ public:
 #define END_TIMING(op) \
     auto end_##op = std::chrono::high_resolution_clock::now(); \
     double duration_##op = std::chrono::duration<double, std::micro>(end_##op - start_##op).count(); \
-    if (g_simpleDetector.IsValid()) { \
-        g_simpleDetector.RecordTiming(#op, duration_##op); \
+    if (g_simpleDetector && g_simpleDetector->IsValid()) { \
+        g_simpleDetector->RecordTiming(#op, duration_##op); \
     }

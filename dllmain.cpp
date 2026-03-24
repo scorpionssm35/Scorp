@@ -48,7 +48,6 @@
 #include "UltimateScreenshotCapturer.h"
 #include "DetectionAggregator.h"
 #include "KeyToggleMonitor.h"
-#include "AntiCheatTimer.h"
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
@@ -68,7 +67,7 @@
 typedef int socklen_t;
 #endif
 std::string VerSVG = "1.1.6.5";
-bool GameProjectdayzzona = true;
+bool GameProjectdayzzona = false;
 static std::string WStringToString(const std::wstring& wstr) {
     std::string result;
     for (wchar_t wc : wstr) {
@@ -449,15 +448,6 @@ void InfoOutMessage(const std::string& hwid, const std::string& id, const std::s
     resetter.disarm(); 
     g_isProcessBusyServer.store(false);
 }
-#pragma region SCTime
-AntiCheatTimer* g_pAntiCheatTimer = nullptr;
-void InitAntiCheatTimer() {
-    if (!g_pAntiCheatTimer) {
-        g_pAntiCheatTimer = new AntiCheatTimer();
-        g_pAntiCheatTimer->startSightTimer();
-    }
-}
-#pragma endregion
 #pragma region scs
 std::atomic<int> g_currentScreenshotter{ 0 };
 #pragma region SC1
@@ -509,11 +499,11 @@ void SendScreenshotToServer(const std::string& infouser, const std::string& id) 
            // Log("[LOGEN] Screenshot successfully sent to server [1] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount));
         }
         else {
-            Log("[LOGEN] ERROR: Failed to send screenshot to server [1] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
+          //  Log("[LOGEN] ERROR: Failed to send screenshot to server [1] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
         }
     }
     else {
-        Log("[LOGEN] Screenshot Game not activ [1] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
+       // Log("[LOGEN] Screenshot Game not activ [1] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount));
     }
 }
 #pragma endregion
@@ -545,11 +535,11 @@ void SendScreenshotToServer2(const std::string& infouser, const std::string& id)
            // Log("[LOGEN] #2 Screenshot successfully sent to server [2] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount2));
         }
         else {
-            Log("[LOGEN] #2 ERROR: Failed to send screenshot to server [2]" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
+           // Log("[LOGEN] #2 ERROR: Failed to send screenshot to server [2]" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
         }
     }
     else {
-        Log("[LOGEN] #2 Screenshot Game not activ [2] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
+       // Log("[LOGEN] #2 Screenshot Game not activ [2] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount2));
     }
 }
 #pragma endregion
@@ -581,11 +571,11 @@ void SendScreenshotToServer3(const std::string& infouser, const std::string& id)
            // Log("[LOGEN] #3 Screenshot successfully sent to server [3] " + Goldberg_UID_SC + "=" + std::to_string(SaveScreenshotToDiskCount3));
         }
         else {
-            Log("[LOGEN] #3 ERROR: Failed to send screenshot to server [3] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
+           // Log("[LOGEN] #3 ERROR: Failed to send screenshot to server [3] " + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
         }
     }
     else {
-        Log("[LOGEN] #3 Screenshot Game not activ [3] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
+       // Log("[LOGEN] #3 Screenshot Game not activ [3] =" + infouser + "=" + std::to_string(SaveScreenshotToDiskCount3));
     }
 }
 #pragma endregion
@@ -691,7 +681,7 @@ void StartSightImgDetection(const std::string& infouser) {
     static uint64_t lastFullLog = 0;
     uint64_t now = GetTickCount64();
     if (now - lastFullLog > 30000) {  // Раз в 30 секунд
-        Log("[VEH] StartSightImg : All screenshoters busy, " + infouser + " lost");
+       // Log("[VEH] StartSightImg : All screenshoters busy, " + infouser + " lost");
         lastFullLog = now;
     }
 }
@@ -1500,13 +1490,13 @@ BOOL WINAPI HookedReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVO
         if (pid == GetCurrentProcessId()) {
             std::string procName = GetProcessName(hProcess);
             if (ToLower(procName).find("dayz") != std::string::npos) {
-                g_simpleDetector.RecordTiming("DAYZ_MEMORY_READ", duration_ReadProcessMemory);
+                g_simpleDetector->RecordTiming("DAYZ_MEMORY_READ", duration_ReadProcessMemory);
 
                 // Проверяем, не читаются ли игровые данные (примерная эвристика)
                 uintptr_t addr = (uintptr_t)lpBaseAddress;
                 // Если адрес в диапазоне игровых структур (нужно настроить под DayZ)
                 if (addr > 0x140000000 && addr < 0x160000000) {
-                    g_simpleDetector.RecordTiming("GAME_DATA_READ", duration_ReadProcessMemory);
+                    g_simpleDetector->RecordTiming("GAME_DATA_READ", duration_ReadProcessMemory);
                 }
             }
         }
@@ -1541,13 +1531,13 @@ BOOL WINAPI HookedWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress, LPCV
         if (pid == GetCurrentProcessId()) {
             std::string procName = GetProcessName(hProcess);
             if (ToLower(procName).find("dayz") != std::string::npos) {
-                g_simpleDetector.RecordTiming("DAYZ_MEMORY_WRITE", duration_WriteProcessMemory);
+                g_simpleDetector->RecordTiming("DAYZ_MEMORY_WRITE", duration_WriteProcessMemory);
 
                 // Подозрительная запись: маленький размер, часто в адреса игровых объектов
                 if (nSize == 4 || nSize == 8) {  // запись указателей или флагов
                     uintptr_t addr = (uintptr_t)lpBaseAddress;
                     if (addr > 0x140000000 && addr < 0x160000000) {
-                        g_simpleDetector.RecordTiming("GAME_DATA_WRITE", duration_WriteProcessMemory);
+                        g_simpleDetector->RecordTiming("GAME_DATA_WRITE", duration_WriteProcessMemory);
                     }
                 }
             }
@@ -1627,7 +1617,7 @@ HANDLE WINAPI HookedCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUTES lp
 
     // Это критичная операция для инжектов
     if (result != NULL) {
-        g_simpleDetector.RecordTiming("SUCCESSFUL_REMOTE_THREAD", duration_CreateRemoteThread);
+        g_simpleDetector->RecordTiming("SUCCESSFUL_REMOTE_THREAD", duration_CreateRemoteThread);
         LogFormat("[VEH] CreateRemoteThread SUCCESS to PID %d by %s", pid, callerModule.c_str());
     }
 
@@ -2184,7 +2174,7 @@ void ReadModuleMemory(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD
         ReadModuleMemoryWithChecksum(hProcess, baseAddress, size, processId, processName, moduleName, modulePath);
         END_TIMING(ReadModuleMemory);
         std::string opName = std::string("READ_MODULE_") + moduleName;
-        g_simpleDetector.RecordTiming(opName, duration_ReadModuleMemory);
+        g_simpleDetector->RecordTiming(opName, duration_ReadModuleMemory);
     }
     catch (const std::exception& e) {
         // Log("[ERROR] ReadModuleMemory exception: " + std::string(e.what()));
@@ -4044,7 +4034,7 @@ void KERNEL() {
     uint64_t currentTime = GetTickCount64();
     DWORD pid = GetCurrentProcessId();
 
-    if (!g_simpleDetector.ShouldMonitorProcess(pid)) {
+    if (!g_simpleDetector->ShouldMonitorProcess(pid)) {
         return;
     }
 
@@ -4054,10 +4044,10 @@ void KERNEL() {
     std::string processKey = exeName + "_" + std::to_string(pid);
 
     // Основной анализ (внутри уже есть логирование и скриншоты)
-    g_simpleDetector.AnalyzeAdvancedPatterns();
+    g_simpleDetector->AnalyzeAdvancedPatterns();
 
     // Дополнительная логика для КРИТИЧЕСКИХ детекций
-    auto pattern = g_simpleDetector.AnalyzePatterns(); // Быстрая проверка
+    auto pattern = g_simpleDetector->AnalyzePatterns(); // Быстрая проверка
 
     if (pattern == KernelCheatDetector::PATTERN_DMA_BURST ||
         pattern == KernelCheatDetector::PATTERN_KERNEL_DELAY) {
@@ -4159,14 +4149,14 @@ void CleanerThreadFunction() {
         auto start = std::chrono::steady_clock::now();
 
         StartCleanupAccumulatedData();
-        if (g_simpleDetector.IsValid()) {
+        if (g_simpleDetector->IsValid()) {
             uint64_t currentTimeMs = GetTickCount64();
-            g_simpleDetector.CleanupOldOperationStats(currentTimeMs);
+            g_simpleDetector->CleanupOldOperationStats(currentTimeMs);
         }
         auto end = std::chrono::steady_clock::now();
         auto elapsed = end - start;
 
-        g_simpleDetector.ResetCache();
+        g_simpleDetector->ResetCache();
 
         if (elapsed < CLEANUP_INTERVAL) {
             std::this_thread::sleep_for(CLEANUP_INTERVAL - elapsed);
@@ -4224,7 +4214,7 @@ void ForceFullSystemReset() {
         messageCache.clear();
     }
 
-    g_simpleDetector.CleanupOldOperationStats();
+    g_simpleDetector->CleanupOldOperationStats();
 
     // ДОБАВИТЬ: Принудительная очистка EPS
     EPS::CleanupMemory(true);
@@ -4314,8 +4304,8 @@ void Cycle() {
                     }              
                 }
                 if (lastResetTime - lastKernelCleanup > 360000) { 
-                    if (g_simpleDetector.IsValid()) {
-                        g_simpleDetector.CleanupOldOperationStats(lastResetTime);
+                    if (g_simpleDetector->IsValid()) {
+                        g_simpleDetector->CleanupOldOperationStats(lastResetTime);
                     }
                     ForceFullSystemReset();
                     lastKernelCleanup = lastResetTime;
@@ -4331,7 +4321,7 @@ void Cycle() {
             }
             catch (...) {
                 errorCount++;
-                g_simpleDetector.RecordTiming("CYCLE_EXCEPTION", errorCount * 1000.0);
+                g_simpleDetector->RecordTiming("CYCLE_EXCEPTION", errorCount * 1000.0);
 
                 if (errorCount == 1) Sleep(10000);
                 else if (errorCount == 2) Sleep(30000);
@@ -4432,13 +4422,16 @@ void InitializeMonitoring() {
                     if (g_screenshotCapturer.IsOverlayUnderAttack()) {
                         Log("[LOGEN] Overlay debug mode activated due to attack");
                     }
+                    if (!g_simpleDetector) {
+                        g_simpleDetector = std::make_unique<KernelCheatDetector>(Name_Game, true);
+                        Log("[LOGEN] KernelCheatDetector initialized");
+                    }
                     Sleep(1000);
                     InitializeVulkanDetection();
                     Sleep(5000);
                     StartVulkanMonitor();
                     StartCleanerThread();
                    // StartMemoryCleaner();
-                  //  InitAntiCheatTimer();
                     while (true) {
                         try {
                             InfoOutStatus(hwid, Goldberg_UID_SC);
@@ -4485,7 +4478,7 @@ void InitializeMonitoring() {
 }
 DWORD WINAPI SafeInitialize(LPVOID) {
     __try {
-        InitializeMonitoring();
+       InitializeMonitoring();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { }
     return 0;
