@@ -154,7 +154,7 @@ void BD_SetAggressionLevel(BDConfig::AggressionLevel level);
 BDConfig::AggressionLevel BD_GetAggressionLevel();
 void BD_GetSuspicionMetrics(BDSuspicionMetrics& outMetrics);
 void BD_ResetSuspicionMetrics();
-
+void BD_ApplySmartReset();
 // Структуры для NoRecoil и Bullet детекции
 struct RecoilData {
     float baseRecoil = 0.0f;

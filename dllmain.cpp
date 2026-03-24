@@ -4101,6 +4101,15 @@ void KERNEL() {
     }
 }
 
+
+SIZE_T GetCurrentMemoryUsageMB() {
+    PROCESS_MEMORY_COUNTERS pmc;
+    pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return pmc.WorkingSetSize / (1024 * 1024);
+    }
+    return 0;
+}
 MemoryCleaner g_memoryCleaner(5);
 void StartMemoryCleaner() {
     g_memoryCleaner.Start();
@@ -4157,6 +4166,8 @@ void CleanerThreadFunction() {
         auto end = std::chrono::steady_clock::now();
         auto elapsed = end - start;
 
+        g_simpleDetector.ResetCache();
+
         if (elapsed < CLEANUP_INTERVAL) {
             std::this_thread::sleep_for(CLEANUP_INTERVAL - elapsed);
         }
@@ -4183,25 +4194,94 @@ void StopCleanerThread() {
     Log("[LOGEN] Cleaner thread stopped");
 }
 void ForceFullSystemReset() {
-    BD_ResetSuspicionMetrics(); 
+    LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
+
+    BD_ResetSuspicionMetrics();
     BD_ClearLogData();
+
     if (g_keyMonitor) {
-        g_keyMonitor->ClearAllData(); 
-        g_keyMonitor->ResetStats();   
+        g_keyMonitor->ClearAllData();
+        g_keyMonitor->ResetStats();
     }
+
     if (g_vulkanDetector) {
         g_vulkanDetector->ClearDetectedHooks();
-        g_vulkanDetector->CleanupOldData(); 
+        g_vulkanDetector->CleanupOldData();
     }
-    g_logRateLimitMap.clear();    
-    g_crcDiskCache.clear();           
-    g_pidCooldownMs.clear();    
-    if (messageCache.size() > 0) messageCache.clear();
-    g_simpleDetector.CleanupOldOperationStats();                    
+
+    // ОЧИСТКА ГЛОБАЛЬНЫХ КЭШЕЙ
+    g_logRateLimitMap.clear();
+
+    {
+        std::lock_guard<std::mutex> lock(g_crcDiskCacheMx);
+        g_crcDiskCache.clear();
+    }
+
+    g_pidCooldownMs.clear();
+
+    if (messageCache.size() > 0) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        messageCache.clear();
+    }
+
+    g_simpleDetector.CleanupOldOperationStats();
+
+    // ДОБАВИТЬ: Принудительная очистка EPS
+    EPS::CleanupMemory(true);
+
+    // ДОБАВИТЬ: Очистка BehaviorDetector internal структур
+    BD_ApplySmartReset(); // Вызвать принудительно
+
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
     SaveScreenshotToDiskCount3 = 0;
+
+    SIZE_T afterMemoryMB = GetCurrentMemoryUsageMB();
+    LogFormat("[LOGEN] ForceFullSystemReset END - Memory: %zu MB (freed %zu MB)",
+        afterMemoryMB,
+        (afterMemoryMB < GetCurrentMemoryUsageMB() ? GetCurrentMemoryUsageMB() - afterMemoryMB : 0));
 }
+void CheckMemoryAndCleanup() {
+    PROCESS_MEMORY_COUNTERS pmc;
+    pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
+
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        SIZE_T memoryMB = pmc.WorkingSetSize / (1024 * 1024);
+
+        static SIZE_T lastMemoryMB = 0;
+        static int cleanupCount = 0;
+        if (memoryMB > 7000) {
+            LogFormat("[LOGEN] WARNING: Memory at %zu MB", memoryMB);
+            if (memoryMB > 8000) {
+                LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
+                ForceFullSystemReset();
+                cleanupCount++;
+                if (cleanupCount > 3 && memoryMB > 9000) {
+                    LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups",
+                        memoryMB, cleanupCount);
+
+                    // Экстренные меры
+                    BD_ResetSuspicionMetrics();
+                    if (g_keyMonitor) {
+                        g_keyMonitor->ClearAllData();
+                    }
+                    messageCache.clear();
+                    cleanupCount = 0;
+                }
+            }
+        }
+        else {
+            cleanupCount = 0;
+        }
+
+        // Логируем каждые 1000 MB (1 GB) роста
+        if (memoryMB > lastMemoryMB + 1000) {
+            LogFormat("[LOGEN] Memory milestone: %zu MB", memoryMB);
+            lastMemoryMB = memoryMB;
+        }
+    }
+}
+
 void Cycle() {
     try {
         int slowCheckCounter = 0;
@@ -4357,12 +4437,13 @@ void InitializeMonitoring() {
                     Sleep(5000);
                     StartVulkanMonitor();
                     StartCleanerThread();
-                    StartMemoryCleaner();
+                   // StartMemoryCleaner();
                   //  InitAntiCheatTimer();
                     while (true) {
                         try {
                             InfoOutStatus(hwid, Goldberg_UID_SC);
                             Sleep(10000);
+                            CheckMemoryAndCleanup();
                         }
                         catch (const std::exception& e) {
                             Log("[ERROR] InfoOutStatus update failed: " + std::string(e.what()));

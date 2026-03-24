@@ -147,7 +147,7 @@ public:
             while (m_running) {
                 auto startTime = std::chrono::steady_clock::now();
 
-               // SIZE_T beforeMem = GetCurrentMemoryUsage();
+                SIZE_T beforeMem = GetCurrentMemoryUsage();
 
                 // 1. Очищаем кучи
                 ForceHeapCleanup();
@@ -157,7 +157,6 @@ public:
 
                 // 3. Пробуем очистить системный кэш (не обязательно)
                 // TryClearSystemCache(); // Закомментировано, т.к. требует прав
-                /*
                 SIZE_T afterMem = GetCurrentMemoryUsage();
                 SIZE_T freed = (beforeMem > afterMem) ? (beforeMem - afterMem) : 0;
 
@@ -167,7 +166,6 @@ public:
                         FormatBytes(afterMem) + " (freed " +
                         FormatBytes(freed) + ")").c_str());
                 }
-                */
                 static DWORD lastFullReset = 0;
                 if (GetTickCount() - lastFullReset > 5 * 60 * 1000) {  // 30 минут
                     EPS::CleanupMemory(true);

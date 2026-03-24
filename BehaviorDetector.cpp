@@ -1077,7 +1077,7 @@ static void BD_ESP_Tick(uintptr_t entityArray, uint64_t nowMs) {
         s_espHoldStartMs = 0;
     }
 }
-static void BD_ApplySmartReset() {
+void BD_ApplySmartReset() {
     static uint64_t lastSmartReset = 0;
     static uint64_t lastFrameDecay = 0;
     static uint64_t lastLogCooldownCleanup = 0;
