@@ -4,26 +4,15 @@
 #include <wintrust.h>
 #include <softpub.h>
 #include <algorithm>
-
+#include "DetectionAggregator.h"
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
-
-//=============================================================================
-// Конструктор / Деструктор
-//=============================================================================
-
 VulkanDetector::VulkanDetector() {
     // Конструктор
 }
-
 VulkanDetector::~VulkanDetector() {
     Stop();
 }
-
-//=============================================================================
-// Инициализация
-//=============================================================================
-
 bool VulkanDetector::Initialize() {
     if (m_initialized) return true;
 
@@ -50,7 +39,6 @@ bool VulkanDetector::Initialize() {
         return false;
     }
 }
-
 bool VulkanDetector::Start() {
     if (m_isRunning.exchange(true)) {
         return true;
@@ -72,7 +60,6 @@ bool VulkanDetector::Start() {
         return false;
     }
 }
-
 void VulkanDetector::Stop() {
     if (!m_isRunning.exchange(false)) return;
 
@@ -84,24 +71,13 @@ void VulkanDetector::Stop() {
 
     Logs(VulkanLogLevel::INFO, "Vulkan detector stopped");
 }
-
-//=============================================================================
-// Конфигурация
-//=============================================================================
-
 void VulkanDetector::SetConfig(const VulkanDetectorConfig& config) {
     std::lock_guard<std::mutex> lock(m_dataMutex);
     m_config = config;
 }
-
-//=============================================================================
-// Утилиты
-//=============================================================================
-
 uint64_t VulkanDetector::GetTickMs() {
     return GetTickCount64();
 }
-
 bool VulkanDetector::ShouldLog(const std::string& key, uint64_t cooldownMs) {
     uint64_t now = GetTickMs();
 
@@ -115,7 +91,6 @@ bool VulkanDetector::ShouldLog(const std::string& key, uint64_t cooldownMs) {
     }
     return false;
 }
-
 void VulkanDetector::Logs(VulkanLogLevel level, const std::string& message) {
     std::string prefix;
     uint64_t cooldown = 1000;
@@ -143,14 +118,12 @@ void VulkanDetector::Logs(VulkanLogLevel level, const std::string& message) {
         }
     }
 }
-
 std::string VulkanDetector::GetModuleHash(const std::string& path) {
     if (path.empty() || path == "unknown") {
         return "";
     }
     return CalculateFileSHA256Safe(path);
 }
-
 bool VulkanDetector::IsModuleWhitelisted(const std::string& name, const std::string& path) {
     std::string lowerName = name;
     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
@@ -166,7 +139,6 @@ bool VulkanDetector::IsModuleWhitelisted(const std::string& name, const std::str
 
     return IsSystemPath(path);
 }
-
 bool VulkanDetector::IsSystemPath(const std::string& path) {
     std::string lowerPath = path;
     std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
@@ -178,7 +150,6 @@ bool VulkanDetector::IsSystemPath(const std::string& path) {
     }
     return false;
 }
-
 bool VulkanDetector::CheckDigitalSignature(const std::string& path) {
     if (path.empty()) return false;
 
@@ -203,7 +174,6 @@ bool VulkanDetector::CheckDigitalSignature(const std::string& path) {
     LONG status = WinVerifyTrust(NULL, &policyGuid, &trustData);
     return status == ERROR_SUCCESS;
 }
-
 bool VulkanDetector::SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
     if (!address || address < 0x10000 || address > 0x7FFFFFFFFFFF) return false;
 
@@ -224,7 +194,6 @@ bool VulkanDetector::SafeReadMemory(uintptr_t address, void* buffer, size_t size
         return false;
     }
 }
-
 std::string VulkanDetector::GetModuleByAddress(uintptr_t address, std::string& fullPath) {
     fullPath = "unknown";
 
@@ -260,7 +229,6 @@ std::string VulkanDetector::GetModuleByAddress(uintptr_t address, std::string& f
 
     return "unknown";
 }
-
 std::string VulkanDetector::AnalyzeHookType(uint8_t* bytes, size_t size) {
     if (size < 5) return "UNKNOWN";
 
@@ -291,7 +259,6 @@ std::string VulkanDetector::AnalyzeHookType(uint8_t* bytes, size_t size) {
 
     return "UNKNOWN_PATCH";
 }
-
 uintptr_t VulkanDetector::CalculateHookTarget(uintptr_t functionAddr, uint8_t* bytes, size_t size) {
     if (size < 5) return 0;
 
@@ -324,11 +291,6 @@ uintptr_t VulkanDetector::CalculateHookTarget(uintptr_t functionAddr, uint8_t* b
 
     return 0;
 }
-
-//=============================================================================
-// Сканирование модулей Vulkan
-//=============================================================================
-
 void VulkanDetector::ScanVulkanModules() {
     std::vector<VulkanModuleInfo> newModules;
 
@@ -414,18 +376,10 @@ void VulkanDetector::ScanVulkanModules() {
 
     for (const auto& mod : newModules) {
         if (!mod.isSystemPath && mod.name == "vulkan-1.dll") {
-            Logs(VulkanLogLevel::DETECTION,
-                "vulkan-1.dll loaded from non-system path: " + mod.path +
-                " | Signed: " + (mod.isSigned ? "Yes" : "No") +
-                " | SHA256: " + mod.hash);
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);
         }
     }
 }
-
-//=============================================================================
-// Инициализация списка функций
-//=============================================================================
-
 void VulkanDetector::InitializeFunctionList() {
     std::vector<VulkanFunction> newFunctions;
 
@@ -484,11 +438,6 @@ void VulkanDetector::InitializeFunctionList() {
         }
     }
 }
-
-//=============================================================================
-// Проверка функции на хук
-//=============================================================================
-
 bool VulkanDetector::CheckFunctionForHook(const VulkanFunction& func) {
     uint8_t currentBytes[16] = { 0 };
     uintptr_t target = 0;
@@ -566,7 +515,12 @@ bool VulkanDetector::CheckFunctionForHook(const VulkanFunction& func) {
                     ? VulkanLogLevel::DETECTION
                     : VulkanLogLevel::WARNING;
 
-                Logs(level, ss.str());
+                if (level == VulkanLogLevel::DETECTION) {
+                    g_detectionAggregator.NotifyDangerousPlayer(0ULL);
+                }
+                else {
+                    Logs(level, ss.str());
+                }
                 return true;
             }
         }
@@ -585,10 +539,6 @@ bool VulkanDetector::CheckFunctionForHook(const VulkanFunction& func) {
 
     return false;
 }
-
-//=============================================================================
-// Основной цикл детекции
-//=============================================================================
 void VulkanDetector::CleanupOldLogKeys() {
     uint64_t now = GetTickMs();
     uint64_t cutoff = now - LOG_KEY_MAX_AGE;  // Удаляем записи старше 10 минут
@@ -666,30 +616,18 @@ void VulkanDetector::DetectionLoop() {
         }
     }
 }
-
-//=============================================================================
-// Получение данных
-//=============================================================================
-
 std::vector<VulkanHookInfo> VulkanDetector::GetDetectedHooks() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
     return m_detectedHooks;
 }
-
 std::vector<VulkanModuleInfo> VulkanDetector::GetVulkanModules() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
     return m_vulkanModules;
 }
-
 void VulkanDetector::ClearDetectedHooks() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
     m_detectedHooks.clear();
 }
-
-//=============================================================================
-// Статус и статистика
-//=============================================================================
-
 std::string VulkanDetector::GetStatus() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
 
@@ -714,7 +652,6 @@ std::string VulkanDetector::GetStatus() {
 
     return ss.str();
 }
-
 std::string VulkanDetector::GetStatistics() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
 
@@ -747,7 +684,6 @@ std::string VulkanDetector::GetStatistics() {
 
     return ss.str();
 }
-
 void VulkanDetector::CleanupOldData() {
     std::lock_guard<std::mutex> lock(m_dataMutex);
 

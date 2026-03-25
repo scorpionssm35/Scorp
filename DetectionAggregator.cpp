@@ -1,19 +1,18 @@
-#include "DetectionAggregator.h"
+п»ї#include "DetectionAggregator.h"
 #include <string>
 #include <sstream>
+#include "BehaviorDetector.h"        
+#include "UltimateScreenshotCapturer.h"
 #include "LogUtils.h"
 #include "dllmain.h"
-// Определение глобальных переменных
+#include "GlobalDefines.h"
 SmartRateLimiter g_rateLimiter;
 AntiCheatConfig g_config;
 std::atomic<int> g_totalDetections(0);
 std::atomic<int> g_loggedDetections(0);
-DetectionAggregator g_detectionAggregator;
-//KernelCheatDetector g_simpleDetector(Name_Game, true); 
+DetectionAggregator g_detectionAggregator; 
 std::unique_ptr<KernelCheatDetector> g_simpleDetector;
-// =================== Реализация структур ===================
 AggStats::AggStats() : count(0), maxConfidence(0.0), firstTime(0), lastTime(0) {}
-
 AntiCheatConfig::AntiCheatConfig() :
     logCooldownNormal(60000),
     logCooldownCritical(30000),
@@ -21,15 +20,13 @@ AntiCheatConfig::AntiCheatConfig() :
     enableAggregation(true),
     logMissedDetections(true) {
 }
-
-// =================== Реализация SmartRateLimiter ===================
 bool SmartRateLimiter::ShouldLog(const std::string& key, int cooldownMs) {
     uint64_t now = GetTickCount64();
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto it = m_lastLogTime.find(key);
     if (it != m_lastLogTime.end() && (now - it->second) < (uint64_t)cooldownMs) {
-        m_detectionCounter[key]++; // считаем пропущенные детекции
+        m_detectionCounter[key]++; // СЃС‡РёС‚Р°РµРј РїСЂРѕРїСѓС‰РµРЅРЅС‹Рµ РґРµС‚РµРєС†РёРё
         return false;
     }
 
@@ -46,23 +43,18 @@ bool SmartRateLimiter::ShouldLog(const std::string& key, int cooldownMs) {
     }
     return true;
 }
-
 void SmartRateLimiter::ResetKey(const std::string& key) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_lastLogTime.erase(key);
     m_detectionCounter.erase(key);
 }
-
-// =================== Реализация DetectionAggregator ===================
 DetectionAggregator::DetectionAggregator() {
-    // Конструктор теперь пустой, так как MAX_BUFFER_SIZE инициализирован в заголовке
+    // РљРѕРЅСЃС‚СЂСѓРєС‚РѕСЂ С‚РµРїРµСЂСЊ РїСѓСЃС‚РѕР№, С‚Р°Рє РєР°Рє MAX_BUFFER_SIZE РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅ РІ Р·Р°РіРѕР»РѕРІРєРµ
 }
-
-void DetectionAggregator::AddDetection(KernelCheatDetector::CheatPattern pattern, DWORD pid,
-    const std::string& processName, double confidence) {
+void DetectionAggregator::AddDetection(KernelCheatDetector::CheatPattern pattern, DWORD pid, const std::string& processName, double confidence) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    DetectionRecord record; // Используется глобальный DetectionRecord
+    DetectionRecord record; // РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РіР»РѕР±Р°Р»СЊРЅС‹Р№ DetectionRecord
     record.timestamp = GetTickCount64();
     record.pattern = pattern;
     record.pid = pid;
@@ -76,7 +68,6 @@ void DetectionAggregator::AddDetection(KernelCheatDetector::CheatPattern pattern
 
     g_totalDetections++;
 }
-
 struct AggregationKey {
     KernelCheatDetector::CheatPattern pattern;
     DWORD pid;
@@ -87,24 +78,22 @@ struct AggregationKey {
         return pid < other.pid;
     }
 };
-
-// Реализация ProcessAndLog
 void DetectionAggregator::ProcessAndLog(bool force) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     if (m_buffer.empty()) return;
 
-    // Явно указываем глобальную область видимости для AggStats
+    // РЇРІРЅРѕ СѓРєР°Р·С‹РІР°РµРј РіР»РѕР±Р°Р»СЊРЅСѓСЋ РѕР±Р»Р°СЃС‚СЊ РІРёРґРёРјРѕСЃС‚Рё РґР»СЏ AggStats
     std::map<AggregationKey, ::AggStats> aggregated;
 
-    // Агрегируем записи
+    // РђРіСЂРµРіРёСЂСѓРµРј Р·Р°РїРёСЃРё
     for (size_t i = 0; i < m_buffer.size(); ++i) {
         const DetectionRecord& record = m_buffer[i];
         AggregationKey key;
         key.pattern = record.pattern;
         key.pid = record.pid;
 
-        // Используем глобальный ::AggStats
+        // РСЃРїРѕР»СЊР·СѓРµРј РіР»РѕР±Р°Р»СЊРЅС‹Р№ ::AggStats
         ::AggStats& stats = aggregated[key];
 
         stats.count++;
@@ -113,16 +102,16 @@ void DetectionAggregator::ProcessAndLog(bool force) {
         stats.lastTime = record.timestamp;
     }
 
-    // Вектор для хранения ключей, которые были обработаны и записаны в лог
+    // Р’РµРєС‚РѕСЂ РґР»СЏ С…СЂР°РЅРµРЅРёСЏ РєР»СЋС‡РµР№, РєРѕС‚РѕСЂС‹Рµ Р±С‹Р»Рё РѕР±СЂР°Р±РѕС‚Р°РЅС‹ Рё Р·Р°РїРёСЃР°РЅС‹ РІ Р»РѕРі
     std::vector<AggregationKey> processedKeys;
 
-    // Обрабатываем агрегированные данные
+    // РћР±СЂР°Р±Р°С‚С‹РІР°РµРј Р°РіСЂРµРіРёСЂРѕРІР°РЅРЅС‹Рµ РґР°РЅРЅС‹Рµ
     for (std::map<AggregationKey, ::AggStats>::const_iterator it = aggregated.begin();
         it != aggregated.end(); ++it) {
         const AggregationKey& key = it->first;
         const ::AggStats& stats = it->second;
 
-        // Находим имя процесса для этого PID
+        // РќР°С…РѕРґРёРј РёРјСЏ РїСЂРѕС†РµСЃСЃР° РґР»СЏ СЌС‚РѕРіРѕ PID
         std::string processName;
         for (size_t i = 0; i < m_buffer.size(); ++i) {
             const DetectionRecord& record = m_buffer[i];
@@ -153,19 +142,19 @@ void DetectionAggregator::ProcessAndLog(bool force) {
                 Log(logStream.str());
                 g_loggedDetections++;
                 StartSightImgDetection(logStream.str());
-                // Запоминаем этот ключ для последующего удаления
+                // Р—Р°РїРѕРјРёРЅР°РµРј СЌС‚РѕС‚ РєР»СЋС‡ РґР»СЏ РїРѕСЃР»РµРґСѓСЋС‰РµРіРѕ СѓРґР°Р»РµРЅРёСЏ
                 processedKeys.push_back(key);
             }
         }
     }
 
-    // Удаляем из буфера только те записи, которые были обработаны и записаны в лог
+    // РЈРґР°Р»СЏРµРј РёР· Р±СѓС„РµСЂР° С‚РѕР»СЊРєРѕ С‚Рµ Р·Р°РїРёСЃРё, РєРѕС‚РѕСЂС‹Рµ Р±С‹Р»Рё РѕР±СЂР°Р±РѕС‚Р°РЅС‹ Рё Р·Р°РїРёСЃР°РЅС‹ РІ Р»РѕРі
     if (!processedKeys.empty()) {
         auto it = m_buffer.begin();
         while (it != m_buffer.end()) {
             bool shouldRemove = false;
 
-            // Проверяем, нужно ли удалять эту запись
+            // РџСЂРѕРІРµСЂСЏРµРј, РЅСѓР¶РЅРѕ Р»Рё СѓРґР°Р»СЏС‚СЊ СЌС‚Сѓ Р·Р°РїРёСЃСЊ
             for (const auto& key : processedKeys) {
                 if (it->pattern == key.pattern && it->pid == key.pid) {
                     shouldRemove = true;
@@ -182,8 +171,6 @@ void DetectionAggregator::ProcessAndLog(bool force) {
         }
     }
 }
-
-// Реализация PatternToString
 std::string DetectionAggregator::PatternToString(KernelCheatDetector::CheatPattern pattern) {
     switch (pattern) {
     case KernelCheatDetector::PATTERN_NONE: return "NONE";
@@ -195,12 +182,34 @@ std::string DetectionAggregator::PatternToString(KernelCheatDetector::CheatPatte
     default: return "UNKNOWN";
     }
 }
+void DetectionAggregator::NotifyDangerousPlayer(uint64_t entityId)
+{
+    float currentScore = g_suspicionMetrics.espScore +
+        g_suspicionMetrics.aimbotScore +
+        g_suspicionMetrics.speedhackScore +
+        g_suspicionMetrics.wallhackScore +
+        g_suspicionMetrics.triggerbotScore +
+        (g_suspicionMetrics.totalFlags * 5.0);
+    PlayerRiskLevel level = (currentScore >= 70.0f) ? PlayerRiskLevel::High :
+        (currentScore >= 40.0f) ? PlayerRiskLevel::Medium :
+        PlayerRiskLevel::Low;
 
-// =================== Реализация ScopedTimer ===================
+    if (level == PlayerRiskLevel::Low) return;
+
+    std::string levelStr = (level == PlayerRiskLevel::High) ? "HIGH RISK" : "MEDIUM RISK";
+
+    LogFormat("[RISK] Entity %llu в†’ %s (score: %.1f)", entityId, levelStr.c_str(), currentScore);
+
+    if (level == PlayerRiskLevel::High)
+    {
+        LogFormat("[DANGEROUS PLAYER] Entity %llu вЂ” РѕРїР°СЃРµРЅ!", entityId);
+        StartSightImgDetection("[DANGEROUS PLAYER] Entity %llu вЂ” РѕРїР°СЃРµРЅ! " + entityId);
+        BD_ResetSuspicionMetrics();    
+    }
+}
 ScopedTimer::ScopedTimer(const std::string& op) : m_operation(op) {
     m_start = std::chrono::high_resolution_clock::now();
 }
-
 ScopedTimer::~ScopedTimer() {
     auto end = std::chrono::high_resolution_clock::now();
     double duration = std::chrono::duration<double, std::micro>(end - m_start).count();

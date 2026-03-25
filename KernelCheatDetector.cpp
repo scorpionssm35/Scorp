@@ -3,6 +3,7 @@
 #include "dllmain.h"
 #include <Psapi.h>
 #include <algorithm>
+#include "DetectionAggregator.h"
 
 #pragma comment(lib, "Psapi.lib")
 
@@ -77,7 +78,7 @@ bool KernelCheatDetector::CheckCodeIntegrityUnsafe()
 }
 void PerformHeuristicScanUnsafeMessage(MEMORY_BASIC_INFORMATION mbi) {
     LogFormat("[VEH] SUSPICIOUS EXECUTABLE PRIVATE region @ 0x%llX (size %zu)", reinterpret_cast<uintptr_t>(mbi.BaseAddress), mbi.RegionSize);
-    StartSightImgDetection("[VEH] SUSPICIOUS MEMORY REGION (kernel cheat)");
+    g_detectionAggregator.NotifyDangerousPlayer(0ULL);  // kernel = глобально
 }
 bool KernelCheatDetector::PerformHeuristicScanUnsafe()
 {
@@ -166,8 +167,7 @@ void KernelCheatDetector::AnalyzeAdvancedPatterns()
     bool heuristic = PerformHeuristicScan();
 
     if (integrity || heuristic) {
-        Log("[VEH] HIGH CHEAT PROBABILITY (integrity + heuristic)");
-        StartSightImgDetection("[VEH] KERNEL CHEAT DETECTED (code + memory)");
+        g_detectionAggregator.NotifyDangerousPlayer(0ULL);
     }
 }
 

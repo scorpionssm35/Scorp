@@ -15,13 +15,14 @@
 #include "LogUtils.h"
 #include "dllmain.h"
 #include "EntityClassifier.h"
+#include "DetectionAggregator.h"
 // === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 static std::atomic<bool> g_bdRun{ false };
 static HANDLE            g_bdThread = nullptr;
 static uintptr_t         g_entityArray = 0;
 static BDLocalProvider   g_provider = nullptr;
 static BDConfig          G{};
-static BDSuspicionMetrics g_suspicionMetrics;
+BDSuspicionMetrics g_suspicionMetrics;
 static BDLocalSnapshot g_prevSnapshot;
 static int      s_espEvents = 0;
 static uint64_t s_espWindowStartMs = 0;
@@ -462,8 +463,11 @@ static void UpdateTargetTracking(const std::vector<EPS::TargetLOS>& allTargets, 
             float trackingScore = AnalyzeTrackingSmoothness(target.id, targetPos, target.angDeg, local);
             if (trackingScore > 0) {
                 g_suspicionMetrics.aimbotScore += trackingScore * 0.3f;
-               // g_suspicionMetrics.espScore += trackingScore * 0.2f;
                 g_suspicionMetrics.espScore += trackingScore * 0.05f;
+
+                if (g_suspicionMetrics.espScore + g_suspicionMetrics.aimbotScore >= 40.0f) {
+                    g_detectionAggregator.NotifyDangerousPlayer(target.id);
+                }
             }
         }
         else {
@@ -497,13 +501,7 @@ static void BD_DetectUnnaturalBehavior(const std::vector<EPS::TargetLOS>& allTar
     if (suspiciousEventsLast30s > 20) {
         float frequencyScore = suspiciousEventsLast30s * 0.5f;
         g_suspicionMetrics.espScore += frequencyScore;
-
-        if (CanLog("UNNATURAL_FREQUENCY", 30000)) {
-            std::stringstream ss;
-            ss << "[VEH] ESP_LOOK_AT_INVISIBLE UNNATURAL_BEHAVIOR_FREQUENCY | EventsLast30s: " << suspiciousEventsLast30s
-                << " | Score: " << std::fixed << std::setprecision(1) << frequencyScore;
-            Log(ss.str().c_str());
-        }
+        g_detectionAggregator.NotifyDangerousPlayer(0ULL);  
     }
 
     int currentSuspiciousTargets = 0;
@@ -561,16 +559,8 @@ static void BD_DetectPerfectKnowledge(const std::vector<EPS::TargetLOS>& allTarg
         float knowledgeRatio = (float)invisibleTargets / totalLivingTargets;
         if (knowledgeRatio > 0.3f) {
             float knowledgeScore = (invisibleTargets * 6.0f) + (totalLivingTargets * 3.0f);
-            //g_suspicionMetrics.espScore += knowledgeScore;
             g_suspicionMetrics.espScore += knowledgeScore * 0.2f;
-            if (CanLog("PERFECT_KNOWLEDGE", 15000)) {
-                std::stringstream ss;
-                ss << "[VEH] PERFECT_KNOWLEDGE | InvisibleTargets: " << invisibleTargets
-                    << " | TotalLivingTargets: " << totalLivingTargets
-                    << " | Ratio: " << std::fixed << std::setprecision(2) << knowledgeRatio
-                    << " | Score: " << std::fixed << std::setprecision(1) << knowledgeScore;
-                Log(ss.str().c_str());
-            }
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);  
         }
     }
 }
@@ -692,18 +682,10 @@ static void BD_DetectESPPatterns(const std::vector<EPS::TargetLOS>& visibleTarge
         else if (behaviorReason == "Precise_Aiming_At_Invisible") {
             behaviorScore = 0.8f * behaviorMultiplier;  // 0.3 * 2.5 = 0.75
         }
-
         g_suspicionMetrics.espScore += behaviorScore;
         g_suspicionMetrics.wallhackScore += behaviorScore * 0.8f;
         g_suspicionMetrics.totalFlags++;
-
-        static uint64_t lastScoreLog = 0;
-        uint64_t now = NowMs();
-        if (now - lastScoreLog > 2000) {
-            lastScoreLog = now;
-           // Log(("[VEH] ESP_LOOK_AT_INVISIBLE +" + std::to_string(behaviorScore) + " ESP | Total ESP: " + std::to_string(g_suspicionMetrics.espScore) + " | WH: " + std::to_string(g_suspicionMetrics.wallhackScore) + " | Flags: " + std::to_string(g_suspicionMetrics.totalFlags)).c_str());
-            //StartSightImg(("[VEH] ESP_LOOK_AT_INVISIBLE +" + std::to_string(behaviorScore) + " ESP | Total ESP: " + std::to_string(g_suspicionMetrics.espScore) + " | WH: " + std::to_string(g_suspicionMetrics.wallhackScore) + " | Flags: " + std::to_string(g_suspicionMetrics.totalFlags)).c_str());
-        }
+        g_detectionAggregator.NotifyDangerousPlayer(target.id ? target.id : 0ULL);
 
         std::string obstacleDisplay = hasObstacle ? "Obstacle" : "None";
 

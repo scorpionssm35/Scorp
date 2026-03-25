@@ -9,14 +9,12 @@ struct BDVec3 {
     float x, y, z;
     BDVec3(float x = 0, float y = 0, float z = 0) : x(x), y(y), z(z) {}
 };
-
 struct BDEnemy {
     int id;
     BDVec3 pos;
     bool alive;
     std::string name;
 };
-
 struct BDConfig {
     // Основные лимиты
     size_t maxEntries = 800;
@@ -111,7 +109,6 @@ struct BDConfig {
     float veryFarObstacleMaxDistance = 500.0f; // УВЕЛИЧЕНО: было 250
     float veryFarObstacleMinHeight = 4.0f;
 };
-
 struct BDLocalSnapshot {
     float yaw = 0, pitch = 0;
     BDVec3 pos{ 0,0,0 };
@@ -121,7 +118,6 @@ struct BDLocalSnapshot {
     int stance = 0;
     int pingMs = 0;
 };
-
 struct BDSuspicionMetrics {
     double espScore = 0.0;
     double aimbotScore = 0.0;
@@ -144,7 +140,6 @@ struct BDSuspicionMetrics {
         return "MULTICHEAT";
     }
 };
-
 using BDLocalProvider = std::function<bool(BDLocalSnapshot&)>;
 
 void BD_Init(const BDConfig& cfg = BDConfig());
@@ -155,7 +150,7 @@ BDConfig::AggressionLevel BD_GetAggressionLevel();
 void BD_GetSuspicionMetrics(BDSuspicionMetrics& outMetrics);
 void BD_ResetSuspicionMetrics();
 void BD_ApplySmartReset();
-// Структуры для NoRecoil и Bullet детекции
+
 struct RecoilData {
     float baseRecoil = 0.0f;
     float currentRecoil = 0.0f;
@@ -164,7 +159,6 @@ struct RecoilData {
     bool isFiring = false;
     std::string currentWeapon;
 };
-
 struct BulletInfo {
     uint64_t id;
     BDVec3 startPos;
@@ -173,7 +167,6 @@ struct BulletInfo {
     uint64_t spawnTime;
 };
 void BD_ClearLogData();
-// Объявления новых функций
 void BD_DetectNoRecoil(const BDLocalSnapshot& local, uint64_t nowMs);
 void BD_AnalyzeBullets(uintptr_t world, const BDLocalSnapshot& local, uint64_t nowMs);
 bool BD_IsBulletGoingThroughWalls(const BulletInfo& bullet, const BDVec3& targetPos, uintptr_t world);
