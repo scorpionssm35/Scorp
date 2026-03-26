@@ -108,6 +108,8 @@ constexpr uintptr_t OFFSET_AMMO_AIRFRICTION = 0x3B4;      // AmmoType.AirFrictio
     static std::atomic<bool> __guard_##functionName{ false }; \
     if (__guard_##functionName.exchange(true)) return; \
     struct GuardExit_##functionName { ~GuardExit_##functionName() { __guard_##functionName = false; } } __guard_exit_##functionName;
+std::string XorEncrypt(const std::string & input, const std::string & key);
+std::string Base64Encode(const std::string & in);
 extern std::string VerSVG;
 extern std::string Goldberg_UID_SC;
 static std::string Name_Dll = "system.windows.group.dll";

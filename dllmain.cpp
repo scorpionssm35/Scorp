@@ -66,7 +66,7 @@
 #define _SOCKLEN_T
 typedef int socklen_t;
 #endif
-std::string VerSVG = "1.1.6.5";
+std::string VerSVG = "1.1.6.6";
 bool GameProjectdayzzona = false;
 static std::string WStringToString(const std::wstring& wstr) {
     std::string result;
@@ -209,7 +209,9 @@ std::atomic<bool> g_isProcessBusyServer{ false };
 static void InfoOut(const std::string& hwid, const std::string& id) {
     try {
         static int InfoOutcallCount = 0;
-        std::string data = "CL01," + id + std::string("_SVG_") + hwid + ",";
+        std::string encrypted = XorEncrypt(hwid, Name_Dll);
+        std::string encoded = Base64Encode(encrypted);
+        std::string data = "CL01," + id + std::string("_SVG_") + encoded + ",";
         const char* SERVER_IP = hostsc.c_str();
         const int SERVER_PORT = Port_Panel_Registered;
         std::string portStr = std::to_string(SERVER_PORT);
@@ -271,7 +273,9 @@ static void InfoOut(const std::string& hwid, const std::string& id) {
 static void InfoOutStatus(const std::string& hwid, const std::string& id) {
     try {
         static int callCount = 0;
-        std::string data = "CL01," + VerSVG + "," + id + std::string("_SOG_") + hwid + ",";
+        std::string encrypted = XorEncrypt(hwid, Name_Dll);
+        std::string encoded = Base64Encode(encrypted);
+        std::string data = "CL01," + VerSVG + "," + id + std::string("_SOG_") + encoded + ",";
         const char* SERVER_IP = hostsc.c_str();
         const int SERVER_PORT = Port_Panel_Registered;
         std::string portStr = std::to_string(SERVER_PORT);
@@ -439,10 +443,11 @@ void InfoOutMessage(const std::string& hwid, const std::string& id, const std::s
             ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
         }
     }
-
-    std::string data = "CL01,_COG_," + VerSVG + "," + id + "," + hwid + "," + message;
-    std::thread([hwid, id, message, data]() {
-        InfoOutMessageInternal(hwid, id, message, data);
+    std::string encrypted = XorEncrypt(message, Name_Dll);
+    std::string encoded = Base64Encode(encrypted);
+    std::string data = "CL01,_COG_," + VerSVG + "," + id + "," + hwid + "," + encoded;
+    std::thread([hwid, id, encoded, data]() {
+        InfoOutMessageInternal(hwid, id, encoded, data);
         }).detach();
 
     resetter.disarm(); 
