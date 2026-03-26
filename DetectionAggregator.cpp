@@ -198,12 +198,12 @@ void DetectionAggregator::NotifyDangerousPlayer(uint64_t entityId)
 
     std::string levelStr = (level == PlayerRiskLevel::High) ? "HIGH RISK" : "MEDIUM RISK";
 
-    LogFormat("[RISK] Entity %llu → %s (score: %.1f)", entityId, levelStr.c_str(), currentScore);
+   // LogFormat("[VEH] Entity %llu → %s (score: %.1f)", entityId, levelStr.c_str(), currentScore);
 
     if (level == PlayerRiskLevel::High)
     {
-        LogFormat("[DANGEROUS PLAYER] Entity %llu — опасен!", entityId);
-        StartSightImgDetection("[DANGEROUS PLAYER] Entity %llu — опасен! " + entityId);
+        LogFormat("[VEH] Entity %llu — Warning!", entityId);
+        StartSightImgDetection(("[VEH] Entity " + std::to_string(entityId) + " — Warning!").c_str());
         BD_ResetSuspicionMetrics();    
     }
 }

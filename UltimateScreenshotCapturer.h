@@ -38,6 +38,9 @@ private:
     void DrawText(std::vector<BYTE>& imageData, int x, int y, const std::string& text,
         BYTE r, BYTE g, BYTE b, int width, int height);
 public:
+
+    void ReleaseDXGIResources();
+
     UltimateScreenshotCapturer();
     ~UltimateScreenshotCapturer();
 

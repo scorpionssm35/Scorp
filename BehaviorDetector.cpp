@@ -55,8 +55,6 @@ static std::map<std::string, int> g_logCounters;
 static const uint64_t LOG_COOLDOWN_CHEAT = 60000;
 static const uint64_t LOG_COOLDOWN_ESP = 10000;
 static const uint64_t LOG_COOLDOWN_DEBUG = 30000;
-static uint64_t g_lastScreenshotTime = 0;
-static const uint64_t SCREENSHOT_COOLDOWN_MS = 60000;
 static const BDConfig AGGRESSION_CONFIGS[] = {
     // LOW
     {
@@ -345,58 +343,6 @@ static bool HasObstacleBetween(const BDVec3& from, const BDVec3& to, const std::
     return false;
 }
 
-static std::string FormatCompactCheatLog(const BDSuspicionMetrics& metrics, const std::string& cheatType, const BDLocalSnapshot& local, const EPS::TargetLOS* target = nullptr, const std::string& obstacleInfo = "None") {
-    std::stringstream ss;
-    ss << "[VEH] CHEAT: " << cheatType;
-    ss << " | Scores: ESP=" << std::fixed << std::setprecision(1) << metrics.espScore;
-    ss << " AIM=" << metrics.aimbotScore;
-    ss << " WH=" << metrics.wallhackScore;
-    ss << " TRG=" << metrics.triggerbotScore;
-    ss << " SPD=" << metrics.speedhackScore;
-    ss << " | Total=" << (metrics.espScore + metrics.aimbotScore + metrics.wallhackScore + metrics.triggerbotScore + metrics.speedhackScore);
-    ss << " Flags=" << metrics.totalFlags;
-    ss << " | Player: " << std::fixed << std::setprecision(0) << local.pos.x << " " << local.pos.y << " " << local.pos.z;
-    ss << " View: " << std::fixed << std::setprecision(1) << local.yaw << " " << local.pitch;
-    ss << " Fired: " << (local.fired ? "Y" : "N");
-    ss << " ADS: " << (local.ads ? "Y" : "N");
-
-    if (target) {
-        std::string targetDisplay = target->entityType;
-        if (target->entityType == "Player") targetDisplay += "(Player)";
-        else if (target->entityType == "Zombie") targetDisplay += "(Zombie)";
-        else if (target->entityType == "Animal") targetDisplay += "(Animal)";
-
-        ss << " | Target: " << targetDisplay;
-        ss << " Class: " << target->entityClass;
-        ss << " Pos: " << std::fixed << std::setprecision(0) << target->pos[0] << " " << target->pos[1] << " " << target->pos[2];
-        ss << " Dist: " << std::fixed << std::setprecision(1) << target->dist << "m";
-        ss << " Angle: " << std::fixed << std::setprecision(2) << target->angDeg << "°";
-
-        bool isVisible = (obstacleInfo == "None");
-        ss << " Visible: " << (isVisible ? "Y" : "N");
-        ss << " Living: " << (IsLivingTarget(target->entityType) ? "Y" : "N");
-
-        std::string obstacleDisplay = obstacleInfo;
-        if (obstacleInfo == "None") {
-            obstacleDisplay = "None(NoObstacle)";
-        }
-        else {
-            obstacleDisplay = "Obstacle(" + obstacleInfo + ")";
-        }
-
-        ss << " Obstacle: " << obstacleDisplay;
-    }
-
-    ss << " | Map: " << EPS::EPS_GetWorldName();
-    ss << " Aggression: ";
-    switch (G.aggressionLevel) {
-    case BDConfig::LOW: ss << "LOW"; break;
-    case BDConfig::MEDIUM: ss << "MEDIUM"; break;
-    case BDConfig::HIGH: ss << "HIGH"; break;
-    }
-
-    return ss.str();
-}
 static float AnalyzeTrackingSmoothness(uint64_t targetId, const BDVec3& currentPos, float currentAngle, const BDLocalSnapshot& local) {
     auto it = g_trackedTargets.find(targetId);
     if (it == g_trackedTargets.end()) return 0.0f;
@@ -858,18 +804,23 @@ static void BD_DetectTriggerbot(const BDLocalSnapshot& current, const std::vecto
         lastTargetAcquisition = nowMs;
     }
 }
-static void BD_AnalyzeSuspicionMetrics() {
+static void BD_AnalyzeSuspicionMetrics()
+{
     static uint64_t lastAnalysisTime = 0;
     static uint64_t lastForceReset = 0;
     uint64_t currentTime = NowMs();
+
+    // Принудительный полный сброс каждые 90 секунд
     if (currentTime - lastForceReset > 90000) {
         g_suspicionMetrics = BDSuspicionMetrics{};
         g_trackedTargets.clear();
         lastForceReset = currentTime;
         return;
     }
+
     int analysisInterval = 20000;
     if (currentTime - lastAnalysisTime < analysisInterval) return;
+    lastAnalysisTime = currentTime;
 
     double totalScore = g_suspicionMetrics.espScore +
         g_suspicionMetrics.aimbotScore +
@@ -881,31 +832,26 @@ static void BD_AnalyzeSuspicionMetrics() {
     double maxScore = 0.0;
 
     if (g_suspicionMetrics.espScore > maxScore && g_suspicionMetrics.espScore > 15.0) {
-        maxScore = g_suspicionMetrics.espScore;
-        cheatType = "ESP";
+        maxScore = g_suspicionMetrics.espScore; cheatType = "ESP";
     }
     if (g_suspicionMetrics.aimbotScore > maxScore && g_suspicionMetrics.aimbotScore > 12.0) {
-        maxScore = g_suspicionMetrics.aimbotScore;
-        cheatType = "AIMBOT";
+        maxScore = g_suspicionMetrics.aimbotScore; cheatType = "AIMBOT";
     }
     if (g_suspicionMetrics.wallhackScore > maxScore && g_suspicionMetrics.wallhackScore > 10.0) {
-        maxScore = g_suspicionMetrics.wallhackScore;
-        cheatType = "WALLHACK";
+        maxScore = g_suspicionMetrics.wallhackScore; cheatType = "WALLHACK";
     }
     if (g_suspicionMetrics.triggerbotScore > maxScore && g_suspicionMetrics.triggerbotScore > 8.0) {
-        maxScore = g_suspicionMetrics.triggerbotScore;
-        cheatType = "TRIGGERBOT";
+        maxScore = g_suspicionMetrics.triggerbotScore; cheatType = "TRIGGERBOT";
     }
     if (g_suspicionMetrics.speedhackScore > maxScore && g_suspicionMetrics.speedhackScore > 8.0) {
-        maxScore = g_suspicionMetrics.speedhackScore;
-        cheatType = "SPEEDHACK";
+        maxScore = g_suspicionMetrics.speedhackScore; cheatType = "SPEEDHACK";
     }
 
     double scoreThreshold = G.suspiciousScoreThreshold * 2.0;
     int flagsThreshold = (10 - G.aggressionLevel * 2) * 5;
 
+    // Мало подозрений — мягкий decay и выход
     if (maxScore < 15.0) {
-        cheatType = "UNKNOWN";
         double softDecay = 0.9;
         g_suspicionMetrics.espScore *= softDecay;
         g_suspicionMetrics.aimbotScore *= softDecay;
@@ -919,63 +865,29 @@ static void BD_AnalyzeSuspicionMetrics() {
         return;
     }
 
-    BDLocalSnapshot currentLocal;
-    if (g_provider(currentLocal)) {
-        if (totalScore > scoreThreshold || g_suspicionMetrics.totalFlags > flagsThreshold) {
-            if (CanLog("CHEAT_DETECTION", LOG_COOLDOWN_CHEAT)) {
-                float camPos[3], camFwd[3];
-                EPS::TargetLOS currentTarget{};
-                bool hasTarget = false;
-                std::string obstacleInfo = "None";
-
-                if (LP_GetCamera(camPos, camFwd)) {
-                    auto ents = EPS::Snapshot(g_entityArray);
-                    std::vector<EPS::TargetLOS> bucket;
-                    EPS::EPS_BuildLOSBucket(ents, camPos, camFwd, bucket, 10);
-
-                    for (const auto& target : bucket) {
-                        if (IsLivingTarget(target.entityType) &&
-                            target.angDeg < G.triggerbotAngle &&
-                            target.dist < G.maxTargetDistance) {
-                            currentTarget = target;
-                            hasTarget = true;
-                            BDVec3 playerPos = { currentLocal.pos.x, currentLocal.pos.y, currentLocal.pos.z };
-                            BDVec3 targetPos = { currentTarget.pos[0], currentTarget.pos[1], currentTarget.pos[2] };
-                            HasObstacleBetween(playerPos, targetPos, bucket, obstacleInfo);
-                            break;
-                        }
-                    }
-                }
-
+    // Основная проверка
+    if (totalScore > scoreThreshold || g_suspicionMetrics.totalFlags > flagsThreshold) {
+        if (CanLog("CHEAT_DETECTION", LOG_COOLDOWN_CHEAT)) {
+            BDLocalSnapshot currentLocal;
+            if (g_provider(currentLocal)) {
                 if (currentLocal.pitch > 80.0f || currentLocal.pitch < -80.0f) {
                     return;
                 }
-
-                std::string detectionLog = FormatCompactCheatLog(g_suspicionMetrics, cheatType, currentLocal, hasTarget ? &currentTarget : nullptr, obstacleInfo);
-                Log(detectionLog.c_str());
-
-                uint64_t screenshotTime = NowMs();
-                if (screenshotTime - g_lastScreenshotTime > SCREENSHOT_COOLDOWN_MS) {           
-                    g_lastScreenshotTime = screenshotTime;
-                    StartSightImgDetection(detectionLog.c_str());
-                }
-
-                g_suspicionMetrics.espScore *= 0.1;
-                g_suspicionMetrics.aimbotScore *= 0.1;
-                g_suspicionMetrics.wallhackScore *= 0.1;
-                g_suspicionMetrics.triggerbotScore *= 0.1;
-                g_suspicionMetrics.speedhackScore *= 0.1;
             }
+
+            // ← Всё логирование и скриншот теперь делает NotifyDangerousPlayer
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);
+
+            // Мягкий decay (на High уже сбросит Notify, так что безопасно)
+            g_suspicionMetrics.espScore *= 0.1;
+            g_suspicionMetrics.aimbotScore *= 0.1;
+            g_suspicionMetrics.wallhackScore *= 0.1;
+            g_suspicionMetrics.triggerbotScore *= 0.1;
+            g_suspicionMetrics.speedhackScore *= 0.1;
         }
     }
-    /*
-    double decayRate = 0.70 + G.aggressionLevel * 0.05;
-    g_suspicionMetrics.espScore *= decayRate;
-    g_suspicionMetrics.aimbotScore *= decayRate;
-    g_suspicionMetrics.speedhackScore *= decayRate;
-    g_suspicionMetrics.wallhackScore *= decayRate;
-    g_suspicionMetrics.triggerbotScore *= decayRate;
-    */
+
+    // Защита от переполнения скора
     const double MAX_ESP_SCORE = 80.0;
     const double MAX_AIMBOT_SCORE = 40.0;
     const double MAX_WALLHACK_SCORE = 50.0;
@@ -983,8 +895,6 @@ static void BD_AnalyzeSuspicionMetrics() {
     g_suspicionMetrics.espScore = std::min(g_suspicionMetrics.espScore, MAX_ESP_SCORE);
     g_suspicionMetrics.aimbotScore = std::min(g_suspicionMetrics.aimbotScore, MAX_AIMBOT_SCORE);
     g_suspicionMetrics.wallhackScore = std::min(g_suspicionMetrics.wallhackScore, MAX_WALLHACK_SCORE);
-
-    lastAnalysisTime = currentTime;
 }
 static void BD_ESP_Tick(uintptr_t entityArray, uint64_t nowMs) {
     float camPos[3], camFwd[3];
