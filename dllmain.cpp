@@ -49,10 +49,23 @@
 #include "DetectionAggregator.h"
 #include "KeyToggleMonitor.h"
 #include "dllmain.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#pragma comment(lib, "Crypt32.lib")
+#pragma comment(lib, "Version.lib")
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <unordered_map>
+#include "SystemInitializer.h"
+#include "EntityPosSampler.h"
+#include "VulkanDetector.h"
+#include "BehaviorDetector.h"
+#include "MemoryCleaner.h"
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
-[WARNING Memory]
 [WARNING HOOK]
 [WARNING Module]
 [HOOK] ReadProcessMemory
@@ -70,6 +83,7 @@ typedef int socklen_t;
 std::string VerSVG = "1.1.6.6";
 bool GameProjectdayzzona = false;
 
+MemoryCleaner g_memoryCleaner(10);
 const uint32_t SHA256::K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -192,13 +206,6 @@ void SHA256::transform() {
     }
 }
 
-static std::string WStringToString(const std::wstring& wstr) {
-    std::string result;
-    for (wchar_t wc : wstr) {
-        result.push_back(static_cast<char>(wc));
-    }
-    return result;
-}
 static bool isLicenseVersion;
 bool DetermineAndSetGameProcessNames() {
     std::wstring processPath;
@@ -1265,14 +1272,12 @@ std::string GetModulePath(HANDLE hProcess, HMODULE hModule) {
         return "";
     }
 }
-std::string WideStringToString(const std::wstring& wideStr) {
-    if (wideStr.empty()) return "";
-
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wideStr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (sizeNeeded <= 0) return "";
-
-    std::string strTo(sizeNeeded - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wideStr.c_str(), -1, &strTo[0], sizeNeeded, nullptr, nullptr);
+std::string WStringToUTF8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0) return {};
+    std::string strTo(sizeNeeded, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &strTo[0], sizeNeeded, nullptr, nullptr);
     return strTo;
 }
 std::string GetProcessPath(HANDLE hProcess) {
@@ -1813,9 +1818,11 @@ std::string GetModuleNameFromAddress(HANDLE hProcess, uintptr_t address) {
             if (SafeGetModuleInformation(hProcess, hMods[i], &modInfo, sizeof(modInfo))) {
                 if (address >= (uintptr_t)modInfo.lpBaseOfDll &&
                     address < (uintptr_t)modInfo.lpBaseOfDll + modInfo.SizeOfImage) {
-                    char modName[MAX_PATH];
-                    GetModuleFileNameExA(hProcess, hMods[i], modName, MAX_PATH);
-                    return modName;
+
+                    wchar_t modPathW[MAX_PATH] = { 0 };
+                    if (GetModuleFileNameExW(hProcess, hMods[i], modPathW, MAX_PATH)) {
+                        return WStringToUTF8(modPathW);
+                    }
                 }
             }
         }
@@ -2013,109 +2020,58 @@ std::string HashToHex(const BYTE hash[32]) {
         ss << std::setw(2) << std::setfill('0') << std::hex << (hash[i] & 0xFF);
     return ss.str();
 }
-std::string CalculateFileSHA256Safe(const std::string& filePath) {
+std::string CalculateFileSHA256Safe(const std::wstring& filePathW) {
     BYTE hash[32] = { 0 };
 
-    // Проверяем существование файла (используем W-версию)
-    DWORD fileAttrib = GetFileAttributesW(std::wstring(filePath.begin(), filePath.end()).c_str());
-    if (fileAttrib == INVALID_FILE_ATTRIBUTES) {
+    if (filePathW.empty())
+        return "empty_path";
+
+    // Проверка существования
+    if (GetFileAttributesW(filePathW.c_str()) == INVALID_FILE_ATTRIBUTES) {
         return "file_not_found";
     }
 
-    // Конвертируем ANSI путь в Unicode
-    int wchars_needed = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, NULL, 0);
-    std::wstring wpath(wchars_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, &wpath[0], wchars_needed);
-
-    // Попытка 1: Обычное чтение
-    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ)) {
-        std::string result = HashToHex(hash);
-        bool allZero = true;
-        for (int i = 0; i < 32; i++) {
-            if (hash[i] != 0) {
-                allZero = false;
-                break;
-            }
-        }
-        if (!allZero) {
-            return result;
-        }
+    // Попытки чтения
+    if (CalculateFileSHA256_CStyle(filePathW.c_str(), hash, FILE_SHARE_READ)) {
+        return HashToHex(hash);
+    }
+    if (CalculateFileSHA256_CStyle(filePathW.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE)) {
+        return HashToHex(hash);
+    }
+    if (CalculateFileSHA256_CStyle(filePathW.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)) {
+        return HashToHex(hash);
     }
 
-    // Очищаем хеш для следующей попытки
-    memset(hash, 0, 32);
-
-    // Попытка 2: Чтение с полным доступом
-    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE)) {
-        std::string result = HashToHex(hash);
-        bool allZero = true;
-        for (int i = 0; i < 32; i++) {
-            if (hash[i] != 0) {
-                allZero = false;
-                break;
-            }
-        }
-        if (!allZero) {
-            return result;
-        }
-    }
-
-    // Очищаем хеш
-    memset(hash, 0, 32);
-
-    // Попытка 3: Максимальный доступ (включая удаление)
-    if (CalculateFileSHA256_CStyle(wpath.c_str(), hash, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)) {
-        std::string result = HashToHex(hash);
-        bool allZero = true;
-        for (int i = 0; i < 32; i++) {
-            if (hash[i] != 0) {
-                allZero = false;
-                break;
-            }
-        }
-        if (!allZero) {
-            return result;
-        }
-    }
-
-    // Если все попытки не дали результата, пробуем скопировать файл
-    wchar_t tempPath[MAX_PATH];
-    wchar_t tempFile[MAX_PATH];
-
+    // Последняя попытка через копию
+    wchar_t tempPath[MAX_PATH], tempFile[MAX_PATH];
     if (GetTempPathW(MAX_PATH, tempPath)) {
-        std::wstring fileName = wpath;
+        std::wstring fileName = filePathW;
         size_t pos = fileName.find_last_of(L"\\/");
-        if (pos != std::wstring::npos) {
-            fileName = fileName.substr(pos + 1);
-        }
+        if (pos != std::wstring::npos) fileName = fileName.substr(pos + 1);
 
-        // Добавляем случайное число, чтобы избежать конфликтов
-        srand(GetTickCount());
-        swprintf(tempFile, MAX_PATH, L"%s\\%s_%d.tmp", tempPath, fileName.c_str(), rand());
+        swprintf_s(tempFile, L"%s\\%s_%u.tmp", tempPath, fileName.c_str(), GetTickCount());
 
-        // Пробуем скопировать файл
-        if (CopyFileW(wpath.c_str(), tempFile, FALSE)) {
-            memset(hash, 0, 32);
+        if (CopyFileW(filePathW.c_str(), tempFile, FALSE)) {
             if (CalculateFileSHA256_CStyle(tempFile, hash, FILE_SHARE_READ)) {
                 std::string result = HashToHex(hash);
-                DeleteFileW(tempFile); // Удаляем временный файл
-
-                bool allZero = true;
-                for (int i = 0; i < 32; i++) {
-                    if (hash[i] != 0) {
-                        allZero = false;
-                        break;
-                    }
-                }
-                if (!allZero) {
-                    return result;
-                }
+                DeleteFileW(tempFile);
+                return result;
             }
             DeleteFileW(tempFile);
         }
     }
 
     return "failed_to_read_file_or_compute_hash";
+}
+std::string CalculateFileSHA256Safe(const std::string& filePath) {
+    if (filePath.empty()) return "empty_path";
+
+    // Конвертируем string → wstring правильно
+    int needed = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0);
+    std::wstring wpath(needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, &wpath[0], needed);
+
+    return CalculateFileSHA256Safe(wpath);
 }
 void ReadModuleMemoryWithChecksum(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath) {
     try {
@@ -2127,23 +2083,49 @@ void ReadModuleMemoryWithChecksum(HANDLE hProcess, uintptr_t baseAddress, size_t
             return;
 
         static std::map<uintptr_t, std::string> previousHashes;
-        std::vector<char> buffer(size);
-        SIZE_T bytesRead = 0;
 
-        if (ReadProcessMemory(hProcess, reinterpret_cast<LPCVOID>(baseAddress), buffer.data(), size, &bytesRead) && bytesRead > 0) {
-            std::string currentHash = calculateSHA256(buffer);
-            std::string modifyingModule = GetModuleNameFromAddress(hProcess, baseAddress);
-            std::string  modifyingModuleHash = CalculateFileSHA256Safe(modifyingModule);
-            if (previousHashes.find(baseAddress) != previousHashes.end()) {
-                if (previousHashes[baseAddress] != currentHash) {
-                    Log("[WARNING Memory] CHANGED at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
-                    previousHashes[baseAddress] = currentHash;
-                }
+        // Конвертация UTF-8 → UTF-16 для пути к модулю (из параметра)
+        std::wstring modulePathW;
+        if (!modulePath.empty()) {
+            int needed = MultiByteToWideChar(CP_UTF8, 0, modulePath.c_str(), -1, nullptr, 0);
+            if (needed > 0) {
+                modulePathW.resize(needed);
+                MultiByteToWideChar(CP_UTF8, 0, modulePath.c_str(), -1, &modulePathW[0], needed);
+                if (!modulePathW.empty() && modulePathW.back() == L'\0')
+                    modulePathW.pop_back();
             }
-            else {
+        }
+
+        if (modulePathW.empty() && baseAddress != 0) {
+            wchar_t pathW[MAX_PATH] = { 0 };
+            if (GetModuleFileNameExW(hProcess, (HMODULE)baseAddress, pathW, MAX_PATH)) {
+                modulePathW = pathW;
+            }
+        }
+
+        if (modulePathW.empty()) {
+            Log("[ERROR] Cannot get module path for: " + moduleName);
+            return;
+        }
+
+        // Хеш ФАЙЛА который мы проверяем (еуые.dll)
+        std::string currentHash = CalculateFileSHA256Safe(modulePathW);
+
+        // ← ИСПРАВЛЕНИЕ: получаем имя модуля по baseAddress (тот же модуль)
+        std::string modifyingModule = GetModuleNameFromAddress(hProcess, baseAddress);
+
+        // ← ИСПРАВЛЕНИЕ: хеш того же модуля, а не процесса
+        std::string modifyingModuleHash = CalculateFileSHA256Safe(modulePathW);  // тот же путь!
+
+        if (previousHashes.find(baseAddress) != previousHashes.end()) {
+            if (previousHashes[baseAddress] != currentHash) {
+                Log("[WARNING HOOK] CHANGED at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
                 previousHashes[baseAddress] = currentHash;
-                Log("[INFO Memory] FIRST read at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
             }
+        }
+        else {
+            previousHashes[baseAddress] = currentHash;
+            Log("[WARNING HOOK] FIRST read at " + std::to_string(baseAddress) + " in process " + processName + "(" + std::to_string(processId) + ")" + " by module: " + modifyingModule + " | SHA256: " + modifyingModuleHash);
         }
     }
     catch (const std::exception& e) {
@@ -2208,8 +2190,11 @@ void ListLoadedModulesAndReadMemoryLimited() {
 
             if (Module32First(hModuleSnap, &me32)) {
                 do {
-                    std::string moduleName = WideStringToString(me32.szModule);
-                    std::string modulePath = WideStringToString(me32.szExePath);
+
+                    std::wstring moduleNameW = me32.szModule;
+                    std::wstring modulePathW = me32.szExePath;
+                    std::string moduleName = WStringToUTF8(moduleNameW);
+                    std::string modulePath = WStringToUTF8(modulePathW);
 
                     if (!ends_with_dll(moduleName)) continue;
 
@@ -2222,7 +2207,7 @@ void ListLoadedModulesAndReadMemoryLimited() {
                     uintptr_t baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
                     size_t moduleSize = me32.modBaseSize;
                     if (moduleSize == 0) continue;
-                    std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                    std::string fileHash = CalculateFileSHA256Safe(modulePathW);
                     std::string lowerModulePath = modulePath;
                     std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
                     if (isSuspicious || usesMemoryFunctions) {
@@ -2232,15 +2217,13 @@ void ListLoadedModulesAndReadMemoryLimited() {
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
                                 StartSightImgDetection("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                             }
-                            /*
                             else if (isSuspicious) {
                                 Log("[WARNING HOOK] SUSPICIOUS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                             }
                             else if (usesMemoryFunctions) {
-                                Log("[IWARNING HOOKFO] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                Log("[WARNING HOOK] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
                             }
-                            */
                         }
                     }
                 } while (Module32Next(hModuleSnap, &me32));
@@ -2281,11 +2264,14 @@ void ListLoadedModulesAndReadMemory() {
 
             if (Module32First(hModuleSnap, &me32)) {
                 do {
-                    std::string moduleName = WideStringToString(me32.szModule);
-                    std::string modulePath = WideStringToString(me32.szExePath);
+
+                    std::wstring moduleNameW = me32.szModule;
+                    std::wstring modulePathW = me32.szExePath;
+                    std::string moduleName = WStringToUTF8(moduleNameW);
+                    std::string modulePath = WStringToUTF8(modulePathW);
 
                     if (!ends_with_dll(moduleName)) continue;
-                    std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                    std::string fileHash = CalculateFileSHA256Safe(modulePathW);
                     bool isSuspicious = IsSuspiciousModule(moduleName);
                     bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me32.hModule);
                     DWORD moduleProcessId = me32.th32ProcessID;
@@ -2310,7 +2296,7 @@ void ListLoadedModulesAndReadMemory() {
                                 Log("[WARNING HOOK] SUSPICIOUS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                             }
                             else if (usesMemoryFunctions) {
-                                Log("[IWARNING HOOKFO] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
+                                Log("[WARNING HOOK] MEMORY-ACCESS DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
                             }
                         }
@@ -2324,631 +2310,6 @@ void ListLoadedModulesAndReadMemory() {
         if (hProcess) CloseHandle(hProcess);
     }
     catch (...) { }
-}
-#pragma endregion
-#pragma region Handle scanner (optimized with CRC32 + disk CRC cache)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#pragma comment(lib, "Crypt32.lib")
-#pragma comment(lib, "Version.lib")
-#include <cstdio>
-#include <cstring>
-#include <cstdint>
-#include <unordered_map>
-#include "SystemInitializer.h"
-#include "EntityPosSampler.h"
-#include "VulkanDetector.h"
-#include "BehaviorDetector.h"
-#include "MemoryCleaner.h"
-static void ScanExternalHandlesOnce_NoSEH();
-static void IntegrityOnce_NoSEH();
-static void CheckModuleTextIntegrityOnce(const wchar_t* diskDll, const char* modName, HMODULE modBase);
-__declspec(noinline) static void ScanExternalHandlesOnce_SEHWrapper();
-__declspec(noinline) static void IntegrityOnce_SEHWrapper();
-#ifndef NTSTATUS
-typedef LONG NTSTATUS;
-#endif
-static const uint32_t kCrc32Table[256] = {
-    0x00000000U,0x77073096U,0xEE0E612CU,0x990951BAU,0x076DC419U,0x706AF48FU,0xE963A535U,0x9E6495A3U,
-    0x0EDB8832U,0x79DCB8A4U,0xE0D5E91EU,0x97D2D988U,0x09B64C2BU,0x7EB17CBDU,0xE7B82D07U,0x90BF1D91U,
-    0x1DB71064U,0x6AB020F2U,0xF3B97148U,0x84BE41DEU,0x1ADAD47DU,0x6DDDE4EBU,0xF4D4B551U,0x83D385C7U,
-    0x136C9856U,0x646BA8C0U,0xFD62F97AU,0x8A65C9ECU,0x14015C4FU,0x63066CD9U,0xFA0F3D63U,0x8D080DF5U,
-    0x3B6E20C8U,0x4C69105EU,0xD56041E4U,0xA2677172U,0x3C03E4D1U,0x4B04D447U,0xD20D85FDU,0xA50AB56BU,
-    0x35B5A8FAU,0x42B2986CU,0xDBBBC9D6U,0xACBCF940U,0x32D86CE3U,0x45DF5C75U,0xDCD60DCFU,0xABD13D59U,
-    0x26D930ACU,0x51DE003AU,0xC8D75180U,0xBFD06116U,0x21B4F4B5U,0x56B3C423U,0xCFBA9599U,0xB8BDA50FU,
-    0x2802B89EU,0x5F058808U,0xC60CD9B2U,0xB10BE924U,0x2F6F7C87U,0x58684C11U,0xC1611DABU,0xB6662D3DU,
-    0x76DC4190U,0x01DB7106U,0x98D220BCU,0xEFD5102AU,0x71B18589U,0x06B6B51FU,0x9FBFE4A5U,0xE8B8D433U,
-    0x7807C9A2U,0x0F00F934U,0x9609A88EU,0xE10E9818U,0x7F6A0DBBU,0x086D3D2DU,0x91646C97U,0xE6635C01U,
-    0x6B6B51F4U,0x1C6C6162U,0x856530D8U,0xF262004EU,0x6C0695EDU,0x1B01A57BU,0x8208F4C1U,0xF50FC457U,
-    0x65B0D9C6U,0x12B7E950U,0x8BBEB8EAU,0xFCB9887CU,0x62DD1DDFU,0x15DA2D49U,0x8CD37CF3U,0xFBD44C65U,
-    0x4DB26158U,0x3AB551CEU,0xA3BC0074U,0xD4BB30E2U,0x4ADFA541U,0x3DD895D7U,0xA4D1C46DU,0xD3D6F4FBU,
-    0x4369E96AU,0x346ED9FCU,0xAD678846U,0xDA60B8D0U,0x44042D73U,0x33031DE5U,0xAA0A4C5FU,0xDD0D7CC9U,
-    0x5005713CU,0x270241AAU,0xBE0B1010U,0xC90C2086U,0x5768B525U,0x206F85B3U,0xB966D409U,0xCE61E49FU,
-    0x5EDEF90EU,0x29D9C998U,0xB0D09822U,0xC7D7A8B4U,0x59B33D17U,0x2EB40D81U,0xB7BD5C3BU,0xC0BA6CADU,
-    0xEDB88320U,0x9ABFB3B6U,0x03B6E20CU,0x74B1D29AU,0xEAD54739U,0x9DD277AFU,0x04DB2615U,0x73DC1683U,
-    0xE3630B12U,0x94643B84U,0x0D6D6A3EU,0x7A6A5AA8U,0xE40ECF0BU,0x9309FF9DU,0x0A00AE27U,0x7D079EB1U,
-    0xF00F9344U,0x8708A3D2U,0x1E01F268U,0x6906C2FEU,0xF762575DU,0x806567CBU,0x196C3671U,0x6E6B06E7U,
-    0xFED41B76U,0x89D32BE0U,0x10DA7A5AU,0x67DD4ACCU,0xF9B9DF6FU,0x8EBEEFF9U,0x17B7BE43U,0x60B08ED5U,
-    0xD6D6A3E8U,0xA1D1937EU,0x38D8C2C4U,0x4FDFF252U,0xD1BB67F1U,0xA6BC5767U,0x3FB506DDU,0x48B2364BU,
-    0xD80D2BDAU,0xAF0A1B4CU,0x36034AF6U,0x41047A60U,0xDF60EFC3U,0xA867DF55U,0x316E8EEFU,0x4669BE79U,
-    0xCB61B38CU,0xBC66831AU,0x256FD2A0U,0x5268E236U,0xCC0C7795U,0xBB0B4703U,0x220216B9U,0x5505262FU,
-    0xC5BA3BBEU,0xB2BD0B28U,0x2BB45A92U,0x5CB36A04U,0xC2D7FFA7U,0xB5D0CF31U,0x2CD99E8BU,0x5BDEAE1DU,
-    0x9B64C2B0U,0xEC63F226U,0x756AA39CU,0x026D930AU,0x9C0906A9U,0xEB0E363FU,0x72076785U,0x05005713U,
-    0x95BF4A82U,0xE2B87A14U,0x7BB12BAEU,0x0CB61B38U,0x92D28E9BU,0xE5D5BE0DU,0x7CDCEFB7U,0x0BDBDF21U,
-    0x86D3D2D4U,0xF1D4E242U,0x68DDB3F8U,0x1FDA836EU,0x81BE16CDU,0xF6B9265BU,0x6FB077E1U,0x18B74777U,
-    0x88085AE6U,0xFF0F6A70U,0x66063BCAU,0x11010B5CU,0x8F659EFFU,0xF862AE69U,0x616BFFD3U,0x166CCF45U,
-    0xA00AE278U,0xD70DD2EEU,0x4E048354U,0x3903B3C2U,0xA7672661U,0xD06016F7U,0x4969474DU,0x3E6E77DBU,
-    0xAED16A4AU,0xD9D65ADCU,0x40DF0B66U,0x37D83BF0U,0xA9BCAE53U,0xDEBB9EC5U,0x47B2CF7FU,0x30B5FFE9U,
-    0xBDBDF21CU,0xCABAC28AU,0x53B39330U,0x24B4A3A6U,0xBAD03605U,0xCDD70693U,0x54DE5729U,0x23D967BFU,
-    0xB3667A2EU,0xC4614AB8U,0x5D681B02U,0x2A6F2B94U,0xB40BBE37U,0xC30C8EA1U,0x5A05DF1BU,0x2D02EF8DU
-};
-static inline uint32_t ComputeCRC32(const void* data, size_t len, uint32_t seed = 0xFFFFFFFFU) {
-    const uint8_t* p = static_cast<const uint8_t*>(data);
-    uint32_t crc = seed;
-    for (size_t i = 0; i < len; ++i)
-        crc = (crc >> 8) ^ kCrc32Table[(crc ^ p[i]) & 0xFF];
-    return crc ^ 0xFFFFFFFFU;
-}
-static std::string CRC32_ToHex(uint32_t crc) {
-    char buf[9];
-    sprintf_s(buf, "%08X", crc);
-    return buf;
-}
-typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX {
-    PVOID  Object;
-    ULONG  UniqueProcessId;
-    ULONG  HandleValue;
-    ULONG  GrantedAccess;
-    USHORT CreatorBackTraceIndex;
-    USHORT ObjectTypeIndex;
-    ULONG  HandleAttributes;
-    ULONG  Reserved;
-} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
-typedef struct _SYSTEM_HANDLE_INFORMATION_EX {
-    ULONG NumberOfHandles;
-    ULONG Reserved;
-    SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
-} SYSTEM_HANDLE_INFORMATION_EX;
-using NtQuerySystemInformation_t = NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
-static NtQuerySystemInformation_t pNtQuerySystemInformation = nullptr;
-static inline uint64_t NowMs() {
-    FILETIME ft; GetSystemTimeAsFileTime(&ft);
-    ULARGE_INTEGER uli; uli.LowPart = ft.dwLowDateTime; uli.HighPart = ft.dwHighDateTime;
-    return (uli.QuadPart / 10000ULL);
-}
-static std::string ToLowerCopy(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-    return s;
-}
-static bool IsWhitelistedProc(const std::string& lowerExe, const std::string& lowerPath) {
-    static const char* wlNames[] = {
-        "steam.exe","steamservice.exe","steamwebhelper.exe",
-        "explorer.exe","discord.exe","obs64.exe",
-        "battleye.exe","beservice.exe","nvcontainer.exe"
-    };
-    for (auto* n : wlNames) if (lowerExe.find(n) != std::string::npos) return true;
-    if (lowerPath.find("\\windows\\") != std::string::npos) return true;
-    return false;
-}
-static std::string GetExePathByPid(DWORD pid) {
-    std::string out = "(unknown)";
-    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!h) return out;
-    char buf[MAX_PATH]; DWORD sz = MAX_PATH;
-    if (QueryFullProcessImageNameA(h, 0, buf, &sz)) out.assign(buf, sz);
-    CloseHandle(h);
-    return out;
-}
-static std::string ComputeBufferSHA256(const void* data, size_t len) {
-    std::string out = "(failed)";
-    HCRYPTPROV hProv = 0; HCRYPTHASH hHash = 0;
-    BYTE rgbHash[32]; DWORD cbHash = sizeof(rgbHash); CHAR hex[65] = { 0 };
-    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
-        CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
-        if (CryptHashData(hHash, (const BYTE*)data, (DWORD)len, 0) &&
-            CryptGetHashParam(hHash, HP_HASHVAL, rgbHash, &cbHash, 0)) {
-            for (DWORD i = 0; i < cbHash; ++i) sprintf_s(hex + i * 2, 3, "%02x", rgbHash[i]);
-            out = hex;
-        }
-    }
-    if (hHash) CryptDestroyHash(hHash);
-    if (hProv) CryptReleaseContext(hProv, 0);
-    return out;
-}
-static bool MapFileReadAll(const wchar_t* path, BYTE*& base, size_t& size, HANDLE& hFile, HANDLE& hMap) {
-    base = nullptr; size = 0; hFile = INVALID_HANDLE_VALUE; hMap = nullptr;
-    hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER li;
-    if (!GetFileSizeEx(hFile, &li) || li.QuadPart <= 0) { CloseHandle(hFile); return false; }
-    hMap = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (!hMap) { CloseHandle(hFile); return false; }
-    base = (BYTE*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-    if (!base) { CloseHandle(hMap); CloseHandle(hFile); return false; }
-    size = (size_t)li.QuadPart;
-    return true;
-}
-static bool FindSectionInMappedData(BYTE* mapBase, const char* secName, BYTE*& secPtr, DWORD& secSize) {
-    __try {
-        auto* dos = (IMAGE_DOS_HEADER*)mapBase;
-        if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
-#ifdef _WIN64
-            auto* nt = (IMAGE_NT_HEADERS64*)(mapBase + dos->e_lfanew);
-#else
-            auto* nt = (IMAGE_NT_HEADERS32*)(mapBase + dos->e_lfanew);
-#endif
-            if (nt->Signature == IMAGE_NT_SIGNATURE) {
-                auto* sh = (IMAGE_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
-                WORD n = nt->FileHeader.NumberOfSections;
-                for (WORD i = 0; i < n; i++) {
-                    char name[9] = { 0 }; memcpy(name, sh[i].Name, 8);
-                    if (_stricmp(name, secName) == 0) {
-                        secPtr = mapBase + sh[i].PointerToRawData;
-                        secSize = sh[i].SizeOfRawData;
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-static bool GetSectionPtr(HMODULE base, const char* secName, BYTE*& secPtr, DWORD& secSize) {
-    if (!base) return false;
-    auto* dos = (IMAGE_DOS_HEADER*)base;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-#ifdef _WIN64
-    auto* nt = (IMAGE_NT_HEADERS64*)((BYTE*)base + dos->e_lfanew);
-#else
-    auto* nt = (IMAGE_NT_HEADERS32*)((BYTE*)base + dos->e_lfanew);
-#endif
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
-    auto* sh = (IMAGE_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
-    WORD n = nt->FileHeader.NumberOfSections;
-    for (WORD i = 0; i < n; i++) {
-        char name[9] = { 0 }; memcpy(name, sh[i].Name, 8);
-        if (_stricmp(name, secName) == 0) {
-            secPtr = (BYTE*)base + sh[i].VirtualAddress;
-            secSize = sh[i].Misc.VirtualSize ? sh[i].Misc.VirtualSize : sh[i].SizeOfRawData;
-            return true;
-        }
-    }
-    return false;
-}
-static std::mutex g_crcDiskCacheMx;
-static std::unordered_map<std::wstring, uint32_t> g_crcDiskCache;
-static bool GetDiskSectionCRC32(const wchar_t* dllPath, const char* secName, uint32_t& outCrc) {
-    BYTE* mapBase = nullptr; size_t mapSize = 0; HANDLE hf = INVALID_HANDLE_VALUE, hm = nullptr;
-    if (!MapFileReadAll(dllPath, mapBase, mapSize, hf, hm)) return false;
-    bool ok = false; BYTE* secPtr = nullptr; DWORD secSize = 0;
-    ok = FindSectionInMappedData(mapBase, secName, secPtr, secSize);
-    if (ok && secPtr && secSize) outCrc = ComputeCRC32(secPtr, secSize);
-    if (mapBase) UnmapViewOfFile(mapBase);
-    if (hm) CloseHandle(hm);
-    if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
-    return ok;
-}
-static bool GetDiskSectionSHA256(const wchar_t* dllPath, const char* secName, std::string& outSha) {
-    BYTE* mapBase = nullptr; size_t mapSize = 0; HANDLE hf = INVALID_HANDLE_VALUE, hm = nullptr;
-    if (!MapFileReadAll(dllPath, mapBase, mapSize, hf, hm)) return false;
-    bool ok = false; BYTE* secPtr = nullptr; DWORD secSize = 0;
-    ok = FindSectionInMappedData(mapBase, secName, secPtr, secSize);
-    if (ok && secPtr && secSize) outSha = ComputeBufferSHA256(secPtr, secSize);
-    if (mapBase) UnmapViewOfFile(mapBase);
-    if (hm) CloseHandle(hm);
-    if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
-    return ok;
-}
-static bool GetDiskSectionCRC32_Cached(const wchar_t* dllPath, const char* secName, uint32_t& outCrc) {
-    {
-        std::lock_guard<std::mutex> lk(g_crcDiskCacheMx);
-        auto it = g_crcDiskCache.find(dllPath);
-        if (it != g_crcDiskCache.end()) { outCrc = it->second; return true; }
-    }
-    uint32_t crc = 0;
-    if (!GetDiskSectionCRC32(dllPath, secName, crc)) return false;
-    {
-        std::lock_guard<std::mutex> lk(g_crcDiskCacheMx);
-        g_crcDiskCache.emplace(dllPath, crc);
-    }
-    outCrc = crc;
-    return true;
-}
-static uint32_t RollingCRC32(const BYTE* data, DWORD size) {
-    const DWORD win = 64 * 1024;
-    static DWORD offset = 0;
-    if (size == 0) return 0;
-    if (offset >= size) offset = 0;
-    DWORD chunk = (offset + win <= size) ? win : (size - offset);
-    uint32_t crc = ComputeCRC32(data + offset, chunk);
-    offset += chunk;
-    return crc;
-}
-struct SuspectInfo {
-    std::string moduleBaseName;
-    std::string modulePath;
-    std::string company;
-    std::string product;
-    size_t      hits = 0;
-    void* exampleAddr = nullptr;
-};
-static uintptr_t SafeReadPtrNoThrow(uintptr_t p) {
-    __try { return *(uintptr_t*)p; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
-static void QueryFileVersionStringsW(const wchar_t* path, std::wstring& company, std::wstring& product) {
-    company.clear(); product.clear();
-    DWORD handle = 0;
-    DWORD sz = GetFileVersionInfoSizeW(path, &handle);
-    if (!sz) return;
-
-    std::vector<BYTE> buf(sz);
-    if (!GetFileVersionInfoW(path, 0, sz, buf.data())) return;
-
-    struct LANGANDCODEPAGE { WORD wLanguage; WORD wCodePage; };
-    LANGANDCODEPAGE* lpTranslate = nullptr; UINT cbTranslate = 0;
-    if (!VerQueryValueW(buf.data(), L"\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate) || !cbTranslate) {
-        // fallback на 040904E4 (en-US, Unicode)
-        LANGANDCODEPAGE fallback{ 0x0409, 0x04B0 };
-        lpTranslate = &fallback; cbTranslate = sizeof(fallback);
-    }
-
-    auto getStr = [&](const wchar_t* name, std::wstring& out) {
-        for (UINT i = 0; i < cbTranslate / sizeof(LANGANDCODEPAGE); ++i) {
-            wchar_t subBlock[256];
-            swprintf_s(subBlock, L"\\StringFileInfo\\%04x%04x\\%s",
-                lpTranslate[i].wLanguage, lpTranslate[i].wCodePage, name);
-            LPVOID val = nullptr; UINT size = 0;
-            if (VerQueryValueW(buf.data(), subBlock, &val, &size) && val && size) {
-                out.assign((wchar_t*)val);
-                if (!out.empty()) return true;
-            }
-        }
-        return false;
-        };
-
-    std::wstring c, p;
-    if (getStr(L"CompanyName", c)) company = c;
-    if (getStr(L"ProductName", p)) product = p;
-}
-static bool FillSuspectByAddress(uintptr_t addr, SuspectInfo& out) {
-    HMODULE hMod = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        (LPCSTR)addr, &hMod) || !hMod) {
-        // может быть не в модуле (JIT, драйверный map в user space и т.п.)
-        out.moduleBaseName = "(not in module)";
-        out.modulePath = "(unknown)";
-        out.company = "";
-        out.product = "";
-        out.exampleAddr = (void*)addr;
-        return true;
-    }
-
-    char pathA[MAX_PATH] = {};
-    if (!GetModuleFileNameA(hMod, pathA, MAX_PATH)) {
-        out.moduleBaseName = "(unknown)";
-        out.modulePath = "(GetModuleFileNameA failed)";
-        out.exampleAddr = (void*)addr;
-        return true;
-    }
-
-    char baseA[MAX_PATH] = {};
-    if (!GetModuleBaseNameA(GetCurrentProcess(), hMod, baseA, MAX_PATH)) {
-        // ничего страшного
-        strcpy_s(baseA, "(unknown)");
-    }
-
-    // версионные строки
-    wchar_t pathW[MAX_PATH]; MultiByteToWideChar(CP_UTF8, 0, pathA, -1, pathW, MAX_PATH);
-    std::wstring compW, prodW;
-    QueryFileVersionStringsW(pathW, compW, prodW);
-
-    // заполнить
-    out.moduleBaseName = baseA;
-    out.modulePath = pathA;
-    {
-        char tmp[512]; tmp[0] = 0;
-        if (!compW.empty()) WideCharToMultiByte(CP_UTF8, 0, compW.c_str(), -1, tmp, (int)sizeof(tmp), nullptr, nullptr);
-        out.company = tmp;
-        tmp[0] = 0;
-        if (!prodW.empty()) WideCharToMultiByte(CP_UTF8, 0, prodW.c_str(), -1, tmp, (int)sizeof(tmp), nullptr, nullptr);
-        out.product = tmp;
-    }
-    out.exampleAddr = (void*)addr;
-    return true;
-}
-static SuspectInfo IdentifyPatchOwnerInText(HMODULE modBase, BYTE* textPtr, DWORD textSize) {
-    SuspectInfo best; best.hits = 0; best.exampleAddr = nullptr;
-    if (!modBase || !textPtr || textSize < 8) return best;
-
-    uintptr_t modBeg = (uintptr_t)modBase;
-    auto* dos = (IMAGE_DOS_HEADER*)modBase;
-#ifdef _WIN64
-    auto* nt = (IMAGE_NT_HEADERS64*)((BYTE*)modBase + dos->e_lfanew);
-#else
-    auto* nt = (IMAGE_NT_HEADERS32*)((BYTE*)modBase + dos->e_lfanew);
-#endif
-    uintptr_t modEnd = modBeg + nt->OptionalHeader.SizeOfImage;
-
-    std::unordered_map<std::string, SuspectInfo> hits;
-
-    BYTE* p = textPtr;
-    BYTE* end = textPtr + (textSize - 8);
-
-    while (p < end) {
-        // near jmp rel32: E9 xx xx xx xx
-        if (p[0] == 0xE9) {
-            int32_t rel = *(int32_t*)(p + 1);
-            uintptr_t dst = (uintptr_t)(p + 5) + rel;
-            if (dst < modBeg || dst >= modEnd) {
-                SuspectInfo si;
-                if (FillSuspectByAddress(dst, si)) {
-                    auto& slot = hits[si.modulePath];
-                    if (slot.hits == 0) slot = si;
-                    slot.hits++;
-                }
-            }
-            p += 5;
-            continue;
-        }
-        // jmp [rip+rel32]: FF 25 xx xx xx xx
-        if (p[0] == 0xFF && p[1] == 0x25) {
-            int32_t rel = *(int32_t*)(p + 2);
-            uintptr_t indTargetPtr = (uintptr_t)(p + 6) + rel;
-            uintptr_t absDst = SafeReadPtrNoThrow(indTargetPtr);
-            if (absDst && (absDst < modBeg || absDst >= modEnd)) {
-                SuspectInfo si;
-                if (FillSuspectByAddress(absDst, si)) {
-                    auto& slot = hits[si.modulePath];
-                    if (slot.hits == 0) slot = si;
-                    slot.hits++;
-                }
-            }
-            p += 6;
-            continue;
-        }
-        p += 1;
-    }
-
-    for (auto& kv : hits) {
-        if (kv.second.hits > best.hits) best = kv.second;
-    }
-    return best;
-}
-
-static void CheckModuleTextIntegrityOnce_Light(const wchar_t* diskDll, const char* modName, HMODULE modBase) {
-    BYTE* secMem = nullptr; DWORD secMemSize = 0;
-    if (!GetSectionPtr(modBase, ".text", secMem, secMemSize) || !secMemSize) return;
-
-    uint32_t crcMemRolling = RollingCRC32(secMem, secMemSize);
-    uint32_t crcDiskRolling = 0;
-    if (!GetDiskSectionCRC32_Cached(diskDll, ".text", crcDiskRolling)) return;
-
-    if (crcMemRolling == crcDiskRolling) return;
-
-    uint32_t fullMem = ComputeCRC32(secMem, secMemSize);
-    uint32_t crcDiskFull = 0;
-    std::string shaMem = ComputeBufferSHA256(secMem, secMemSize);
-    std::string shaDisk;
-    GetDiskSectionCRC32(diskDll, ".text", crcDiskFull);
-    if (!GetDiskSectionSHA256(diskDll, ".text", shaDisk)) shaDisk = "(fail)";
-
-    if (fullMem != crcDiskFull) {
-        SuspectInfo suspect = IdentifyPatchOwnerInText(modBase, secMem, secMemSize);
-
-        char pathA[MAX_PATH] = "(unknown)";
-        GetModuleFileNameA(modBase, pathA, MAX_PATH);
-
-        if (suspect.hits > 0) {
-            LogFormat("[VEH] %s .text MISMATCH | CRC(mem=%s disk=%s) | PATH=%s | SHA(mem=%s disk=%s) | SUSPECT_MOD=%s | SUSPECT_PATH=%s | COMPANY=%s | PRODUCT=%s | HITS=%zu",
-                modName,
-                CRC32_ToHex(fullMem).c_str(), CRC32_ToHex(crcDiskFull).c_str(),
-                pathA, shaMem.c_str(), shaDisk.c_str(),
-                suspect.moduleBaseName.c_str(), suspect.modulePath.c_str(),
-                (suspect.company.empty() ? "(unknown)" : suspect.company.c_str()),
-                (suspect.product.empty() ? "(unknown)" : suspect.product.c_str()),
-                suspect.hits);
-        }
-        else {
-            LogFormat("[VEH] %s .text MISMATCH | CRC(mem=%s disk=%s) | PATH=%s | SHA(mem=%s disk=%s) | SUSPECT=not-found",
-                modName,
-                CRC32_ToHex(fullMem).c_str(), CRC32_ToHex(crcDiskFull).c_str(),
-                pathA, shaMem.c_str(), shaDisk.c_str());
-        }
-    }
-}
-
-static void CheckModuleTextIntegrityOnce(const wchar_t* diskDll, const char* modName, HMODULE modBase) {
-    CheckModuleTextIntegrityOnce_Light(diskDll, modName, modBase);
-}
-__declspec(noinline)
-static void ScanExternalHandlesOnce_SEHWrapper() {
-    // никаких std здесь
-    __try { ScanExternalHandlesOnce_NoSEH(); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { /* молча */ }
-}
-static size_t g_handleCursor = 0;
-static std::unordered_map<DWORD, uint64_t> g_pidCooldownMs;
-static std::mutex g_pidCooldownMx;
-static void ScanExternalHandlesOnce_NoSEH() {
-    if (!pNtQuerySystemInformation) {
-        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-        if (!ntdll) return;
-        pNtQuerySystemInformation =
-            reinterpret_cast<NtQuerySystemInformation_t>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
-        if (!pNtQuerySystemInformation) return;
-    }
-
-    ULONG need = 1u << 20; std::vector<BYTE> buf(need);
-    NTSTATUS st; ULONG retLen = 0;
-    for (;;) {
-        st = pNtQuerySystemInformation(0x40, buf.data(), (ULONG)buf.size(), &retLen);
-        if (st == 0) break; // STATUS_SUCCESS
-        if (retLen <= buf.size()) buf.resize(buf.size() * 2);
-        else buf.resize(retLen + (1u << 16));
-        if (buf.size() > (1u << 26)) return; // 64MB cap
-    }
-
-    auto* shi = (SYSTEM_HANDLE_INFORMATION_EX*)buf.data();
-    const ULONG total = shi->NumberOfHandles;
-    if (total == 0) return;
-
-    DWORD myPid = GetCurrentProcessId();
-    const DWORD vmMask = PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
-
-    const uint64_t startMs = NowMs();
-    const uint64_t budgetMs = 8;
-    const size_t   limitDup = 300;
-    size_t duplicated = 0;
-
-    size_t i = g_handleCursor % total;
-    size_t processed = 0;
-
-    while (processed < total) {
-        const auto& h = shi->Handles[i];
-
-        i = (i + 1) % total;
-        ++processed;
-
-        if (h.UniqueProcessId == myPid || h.UniqueProcessId == 0 || h.UniqueProcessId == 4) continue;
-        if ((h.GrantedAccess & vmMask) == 0) continue;
-
-        {
-            std::lock_guard<std::mutex> lk(g_pidCooldownMx);
-            auto it = g_pidCooldownMs.find(h.UniqueProcessId);
-            if (it != g_pidCooldownMs.end() && it->second > startMs) continue;
-        }
-
-        if (duplicated >= limitDup) break;
-        if ((NowMs() - startMs) >= budgetMs) break;
-
-        HANDLE owner = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, h.UniqueProcessId);
-        if (!owner) {
-            std::lock_guard<std::mutex> lk(g_pidCooldownMx);
-            g_pidCooldownMs[h.UniqueProcessId] = startMs + 30'000;
-            continue;
-        }
-
-        HANDLE dup = nullptr;
-        if (DuplicateHandle(owner, (HANDLE)(uintptr_t)h.HandleValue, GetCurrentProcess(),
-            &dup, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-            ++duplicated;
-
-            DWORD targetPid = GetProcessId(dup);
-            if (targetPid == myPid) {
-                std::string path = GetExePathByPid(h.UniqueProcessId);
-                std::string lower = ToLowerCopy(path);
-                std::string exe = path;
-                auto p = exe.find_last_of("\\/"); if (p != std::string::npos) exe = exe.substr(p + 1);
-                std::string exeLower = ToLowerCopy(exe);
-
-                if (!IsWhitelistedProc(exeLower, lower)) {
-                    LogFormat("[VEH] HANDLE from PID=%lu Acc=0x%08X -> OUR_PID=%lu | EXE=%s | PATH=%s", h.UniqueProcessId, h.GrantedAccess, myPid, exe.c_str(), path.c_str());
-                    std::lock_guard<std::mutex> lk(g_pidCooldownMx);
-                    g_pidCooldownMs[h.UniqueProcessId] = startMs + 5'000;
-                }
-                else {
-                    std::lock_guard<std::mutex> lk(g_pidCooldownMx);
-                    g_pidCooldownMs[h.UniqueProcessId] = startMs + 120'000;
-                }
-            }
-            CloseHandle(dup);
-        }
-        CloseHandle(owner);
-
-        if ((duplicated % 32) == 0) SwitchToThread();
-        if ((NowMs() - startMs) >= budgetMs) break;
-    }
-
-    g_handleCursor = i;
-}
-__declspec(noinline)
-static void IntegrityOnce_SEHWrapper() {
-    __try { IntegrityOnce_NoSEH(); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { /* тихо */ }
-}
-static void IntegrityOnce_NoSEH() {
-    wchar_t sysdir[MAX_PATH]; if (!GetSystemDirectoryW(sysdir, MAX_PATH)) return;
-    std::wstring ntdllPath = std::wstring(sysdir) + L"\\ntdll.dll";
-    std::wstring k32Path = std::wstring(sysdir) + L"\\kernel32.dll";
-    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
-    if (ntdll) CheckModuleTextIntegrityOnce(ntdllPath.c_str(), "NTDLL", ntdll);
-    if (k32)   CheckModuleTextIntegrityOnce(k32Path.c_str(), "KERNEL32", k32);
-}
-static std::atomic<bool> g_softDetectorsStarted{ false };
-static void HandleScannerLoop() {
-#ifdef THREAD_MODE_BACKGROUND_BEGIN
-    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
-#endif
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-
-    DWORD sleepMs = 10;
-    std::this_thread::sleep_for(std::chrono::milliseconds(4000));
-
-    while (true) { 
-        try {
-            const ULONGLONG t0 = GetTickCount64();
-            ScanExternalHandlesOnce_SEHWrapper();
-            const ULONGLONG spent = GetTickCount64() - t0;
-
-            if (spent >= 6)      sleepMs = std::min<DWORD>(sleepMs + 2, 25);
-            else if (sleepMs > 5) sleepMs -= 1;
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-        }
-        catch (const std::exception& e) {
-            break;
-        }
-    }
-
-#ifdef THREAD_MODE_BACKGROUND_END
-    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
-#endif
-}
-static void IntegrityLoop() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(6000));
-    while (true) { 
-        try {
-            IntegrityOnce_SEHWrapper();
-            std::this_thread::sleep_for(std::chrono::milliseconds(60000));
-        }
-        catch (const std::exception& e) {
-            break;
-        }
-    }
-}
-void StartSoftDetectors() {
-    Log("[LOGEN] StartSoftDetectors() called");
-
-    static std::atomic<bool> g_softDetectorsStarted{ false };
-
-    bool expected = false;
-    if (!g_softDetectorsStarted.compare_exchange_strong(expected, true)) {
-        Log("[LOGEN] Soft detectors already running; skipping new start");
-        return;
-    }
-
-    try {
-        std::thread t1([] {
-            Log("[LOGEN] HandleScannerLoop thread starting");
-            HandleScannerLoop();
-            });
-        t1.detach();
-
-        std::thread t2([] {
-            Log("[LOGEN] IntegrityLoop thread starting");
-            IntegrityLoop();
-            });
-        t2.detach();
-        Log("[LOGEN] Soft detectors started (HandleScanner + IntegrityCheck)");
-    }
-    catch (...) {
-        g_softDetectorsStarted.store(false, std::memory_order_relaxed);
-        Log("[LOGEN] Soft detectors start FAILED (exception on thread creation)");
-    }
 }
 #pragma endregion
 #pragma region Monitor_Only
@@ -3026,6 +2387,7 @@ DWORD WINAPI InitializeSystemsThread(LPVOID lpParam) {
     catch (...) {
         Log("[LOGEN] UNKNOWN EXCEPTION");
     }
+    g_memoryCleaner.Start();
     Log("[LOGEN] Thread finished");
     return 0;
 }
@@ -3060,9 +2422,6 @@ void InitializeProtection() {
             return;
         }
         LogFormat("[LOGEN] EntityArray read OK @ 0x%p", (void*)entityArray);
-        Sleep(2000);
-        std::thread([]() { StartSoftDetectors(); }).detach(); 
-        Log("[LOGEN] InitializeSystemsThread waite 10 sec.");
         Sleep(10000);
         auto* systemsArgs = new std::pair<uintptr_t, uintptr_t>(world, entityArray);
         HANDLE systemsThread = CreateThread(nullptr, 0, InitializeSystemsThread, systemsArgs, 0, nullptr);
@@ -3080,96 +2439,6 @@ void InitializeProtection() {
 }
 #pragma endregion
 #pragma region ModulHiden
-void ReadCriticalSections(HANDLE hProcess, uintptr_t baseAddress, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath = "") {  // Добавили modulePath с значением по умолчанию
-
-    const char* sections[] = { ".text", ".rdata", ".data" };
-
-    // Если modulePath не передан, пытаемся получить его
-    std::string fullModulePath = modulePath;
-    if (fullModulePath.empty() && baseAddress != 0) {
-        char path[MAX_PATH] = { 0 };
-        if (GetModuleFileNameExA(hProcess, (HMODULE)baseAddress, path, MAX_PATH)) {
-            fullModulePath = path;
-        }
-    }
-
-
-    // Вычисляем SHA256 файла (если путь существует)
-    std::string fileHash;
-    if (!fullModulePath.empty()) {
-        fileHash = CalculateFileSHA256Safe(fullModulePath);
-        if (fileHash.empty() || fileHash == "failed_to_read_file_or_compute_hash") {
-            fileHash = "hash_unavailable";
-        }
-    }
-    else {
-        fileHash = "path_unknown";
-    }
-
-    for (const char* section : sections) {
-        BYTE* secPtr = nullptr;
-        DWORD secSize = 0;
-
-        if (GetSectionPtr((HMODULE)baseAddress, section, secPtr, secSize) && secSize > 0) {
-            size_t checkSize = (secSize > 4096) ? 4096 : secSize;
-
-            std::vector<char> buffer(checkSize);
-            SIZE_T bytesRead = 0;
-
-            if (ReadProcessMemory(hProcess, secPtr, buffer.data(), checkSize, &bytesRead)) {
-                std::string currentHash = calculateSHA256(buffer);
-                static std::map<std::string, std::string> previousHashes;
-
-
-                std::string lowerPath = fullModulePath;
-                std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-                std::string lowerDllName = Name_Dll;
-                std::transform(lowerDllName.begin(), lowerDllName.end(), lowerDllName.begin(), ::tolower);
-
-                if (lowerPath.find(lowerDllName) != std::string::npos) {
-                    // Это наша DLL - игнорируем или логируем с низким приоритетом
-                    if (strcmp(section, ".data") == 0) {
-                        continue; // Пропускаем дальнейшую обработку
-                    }
-                }
-
-                std::string key = moduleName + ":" + section;
-                if (previousHashes.find(key) != previousHashes.end()) {
-                    if (previousHashes[key] != currentHash) {
-                        // Полный путь к файлу
-                        std::string displayPath = fullModulePath.empty() ? moduleName : fullModulePath;
-
-                        // Формируем подробный лог
-                        std::stringstream ss;
-                        ss << "[WARNING HOOK] Section " << section
-                            << " modified in " << displayPath
-                            << " | Process: " << processName << " (PID: " << processId << ")"
-                            << " | Base: 0x" << std::hex << baseAddress
-                            << " | Section Hash: " << currentHash
-                            << " | File SHA256: " << fileHash;
-
-                        Log(ss.str());
-
-                        // Дополнительно логируем для вашего дискорда
-                        StartSightImgDetection("[WARNING HOOK] Section " + std::string(section) + " modified in " + displayPath + " | SHA256: " + fileHash);
-                    }
-                }
-                else {
-                    previousHashes[key] = currentHash;
-                    // Опционально: логируем первую загрузку
-                    if (std::string(section) == ".data") { // Только для интересующей нас секции
-                        std::stringstream ss;
-                        ss << "[INFO] Section " << section
-                            << " first loaded in " << fullModulePath
-                            << " | Initial Hash: " << currentHash
-                            << " | File SHA256: " << fileHash;
-                        Log(ss.str());
-                    }
-                }
-            }
-        }
-    }
-}
 bool IsSpoofedSystemModule(const std::string& modulePath) {
     std::string lowerPath = ToLower(modulePath);
     if (lowerPath.find("system32") != std::string::npos) {
@@ -3227,8 +2496,10 @@ void EnhancedModuleCheck() {
 
     if (Module32First(hSnapshot, &me)) {
         do {
-            std::string moduleName = WideStringToString(me.szModule);
-            std::string modulePath = WideStringToString(me.szExePath);
+            std::wstring moduleNameW = me.szModule;
+            std::wstring modulePathW = me.szExePath;
+            std::string moduleName = WStringToUTF8(moduleNameW);
+            std::string modulePath = WStringToUTF8(modulePathW);
             std::string lowerPath = ToLower(modulePath);
 
             if (!ends_with_dll(moduleName)) continue;
@@ -3248,10 +2519,9 @@ void EnhancedModuleCheck() {
 
             // Только действительно подозрительные модули
             if ((isSuspicious && usesMemoryFunctions) || likelyInjected) {
-                std::string fileHash = CalculateFileSHA256Safe(modulePath);
+                std::string fileHash = CalculateFileSHA256Safe(modulePathW);
                 Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " | SHA256: " + fileHash);
                 StartSightImgDetection("[WARNING HOOK] INJECTED DLL: " + modulePath + " | SHA256: " + fileHash);
-                ReadCriticalSections(GetCurrentProcess(), (uintptr_t)me.modBaseAddr, currentPid, currentProcessName, moduleName, modulePath);
             }
 
         } while (Module32Next(hSnapshot, &me));
@@ -3388,7 +2658,8 @@ void DetectHiddenModules() {
         if (Module32First(hSnapshot, &me)) {
             do {
                 if (me.th32ProcessID == currentPid) {
-                    std::string modulePath = WideStringToString(me.szExePath);
+                    std::wstring modulePathW = me.szExePath;
+                    std::string modulePath = WStringToUTF8(modulePathW);
                     if (!IsSystemModule(modulePath)) {
                         toolhelpModules.insert(ToLower(modulePath));
                     }
@@ -3436,9 +2707,10 @@ void DetectExternalCheatProcesses() {
     PROCESSENTRY32 pe;
     pe.dwSize = sizeof(PROCESSENTRY32);
 
-    auto IsCheatProcess = [](const std::string& processName, const std::string& processPath) -> bool {
+    auto IsCheatProcess = [](const std::string& processName, const std::wstring& processPathW) -> bool {
         std::string lowerName = ToLower(processName);
-        std::string lowerPath = ToLower(processPath);
+        std::string lowerPath = WStringToUTF8(processPathW); // конвертируем для проверки
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
 
         if (lowerPath.find("\\windows\\") != std::string::npos ||
             lowerPath.find("\\program files") != std::string::npos ||
@@ -3457,25 +2729,30 @@ void DetectExternalCheatProcesses() {
                 return true;
             }
         }
-
         return false;
         };
 
     if (Process32First(hSnapshot, &pe)) {
         do {
-            std::string processName = WideStringToString(pe.szExeFile);
+            std::wstring exeNameW = pe.szExeFile;
+            std::string processName = WStringToUTF8(exeNameW);
 
-            if (_stricmp(processName.c_str(), "DayZ_x64.exe") == 0) continue;
+            if (_stricmp(processName.c_str(), "DayZ_x64.exe") == 0)
+                continue;
 
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
             if (hProcess) {
-                char processPath[MAX_PATH];
-                if (GetModuleFileNameExA(hProcess, NULL, processPath, MAX_PATH)) {
-                    if (IsCheatProcess(processName, processPath)) {
+                wchar_t processPathW[MAX_PATH] = { 0 };
 
-                        std::string fileHash = CalculateFileSHA256Safe(processPath);
-                        Log("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + std::string(processPath) + " SHA256: " + fileHash);
-                        StartSightImgDetection("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + std::string(processPath) + " SHA256: " + fileHash);
+                // Получаем путь в Unicode (правильно!)
+                if (GetModuleFileNameExW(hProcess, NULL, processPathW, MAX_PATH)) {
+                    std::string processPathUTF8 = WStringToUTF8(processPathW);
+
+                    if (IsCheatProcess(processName, processPathW)) {
+                        std::string fileHash = CalculateFileSHA256Safe(processPathW);  // ← правильно, wstring
+
+                        Log("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + processPathUTF8 + " | SHA256: " + fileHash);
+                        StartSightImgDetection("[WARNING HOOK] EXTERNAL CHEAT PROCESS: " + processPathUTF8 + " | SHA256: " + fileHash);
                     }
                 }
                 CloseHandle(hProcess);
@@ -3835,8 +3112,8 @@ void VulkanProcessMonitor() {
                     do {
                         if (pe.th32ProcessID == GetCurrentProcessId()) continue;
 
-                        // Конвертируем wide string в string
-                        std::string processName = WideStringToString(pe.szExeFile);
+                        std::wstring moduleNameW = pe.szExeFile;
+                        std::string processName = WStringToUTF8(moduleNameW);
 
                         if (knownPids.find(pe.th32ProcessID) == knownPids.end()) {
                             knownPids.insert(pe.th32ProcessID);
@@ -4088,7 +3365,6 @@ void KERNEL() {
     }
 }
 
-
 SIZE_T GetCurrentMemoryUsageMB() {
     PROCESS_MEMORY_COUNTERS pmc;
     pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
@@ -4096,13 +3372,6 @@ SIZE_T GetCurrentMemoryUsageMB() {
         return pmc.WorkingSetSize / (1024 * 1024);
     }
     return 0;
-}
-MemoryCleaner g_memoryCleaner(5);
-void StartMemoryCleaner() {
-    g_memoryCleaner.Start();
-}
-void StopMemoryCleaner() {
-    g_memoryCleaner.Stop();
 }
 void ForceFullSystemReset() {
     LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
@@ -4117,18 +3386,14 @@ void ForceFullSystemReset() {
         g_vulkanDetector->CleanupOldData();
     }
     g_logRateLimitMap.clear();
-    {
-        std::lock_guard<std::mutex> lock(g_crcDiskCacheMx);
-        g_crcDiskCache.clear();
-    }
-    g_pidCooldownMs.clear();
+
     if (messageCache.size() > 0) {
         std::lock_guard<std::mutex> lock(cacheMutex);
         messageCache.clear();
     }
     g_simpleDetector->CleanupOldOperationStats();
     EPS::CleanupMemory(true);
-    BD_ApplySmartReset(); 
+    BD_ApplySmartReset();
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
     SaveScreenshotToDiskCount3 = 0;
@@ -4183,25 +3448,17 @@ void Cycle() {
         static uint64_t lastKernelCleanup = 0;
         while (true) {
             try {
-                START_TIMING(ModuleScanCycle);
                 ListLoadedModulesAndReadMemory();
-                END_TIMING(ModuleScanCycle);
 
                 slowCheckCounter++;
                 if (slowCheckCounter >= 3) {
-                    START_TIMING(HiddenModuleDetection);
                     DetectHiddenModules();
-                    END_TIMING(HiddenModuleDetection);
 
                     if (slowCheckCounter >= 6) {
-                        START_TIMING(EnhancedModuleCheck);
                         EnhancedModuleCheck();
-                        END_TIMING(EnhancedModuleCheck);
 
                         if (slowCheckCounter >= 12) {
-                            START_TIMING(ExternalProcessScan);
                             DetectExternalCheatProcesses();
-                            END_TIMING(ExternalProcessScan);
                             slowCheckCounter = 0;
                         }
                     }              
@@ -4213,9 +3470,7 @@ void Cycle() {
                     ForceFullSystemReset();
                     lastKernelCleanup = lastResetTime;
                 }
-                START_TIMING(KernelAnalysis);
                 KERNEL();
-                END_TIMING(KernelAnalysis);
                 if (g_config.enableAggregation) {
                     g_detectionAggregator.ProcessAndLog(true);
                 }
@@ -4347,7 +3602,7 @@ void InitializeMonitoring() {
                 std::thread([]() {
                     while (true) {
                         try {
-                            std::this_thread::sleep_for(std::chrono::minutes(5));
+                            std::this_thread::sleep_for(std::chrono::minutes(15));
                             StartSightImgDetection("Image by time");
                         }
                         catch (const std::exception& e) {
@@ -4380,7 +3635,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
         if (hThread) CloseHandle(hThread);
     }
     else if (ulReason == DLL_PROCESS_DETACH) {
-        StopMemoryCleaner();
+        g_memoryCleaner.Stop();
         UnhookIAT();
         UnhookAdditionalAPI();
     }

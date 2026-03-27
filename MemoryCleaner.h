@@ -9,13 +9,10 @@
 #include <cstdio>
 #include "LogUtils.h"
 
-// Отключаем предупреждения о безопасности
 #pragma warning(disable : 4996)
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
-
-// Необходимые определения для системных вызовов
 #ifndef STATUS_INFO_LENGTH_MISMATCH
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
 #endif
@@ -28,10 +25,7 @@ typedef NTSTATUS(NTAPI* pNtSetSystemInformation)(
     ULONG SystemInformationLength
     );
 
-// Классы информации для SystemInformationClass
 #define SystemFileCacheInformation 0x15  // Для очистки кэша файлов
-
-// Структура для информации о файловом кэше
 typedef struct _SYSTEM_FILE_CACHE_INFORMATION {
     SIZE_T CurrentSize;
     SIZE_T PeakSize;
@@ -49,8 +43,6 @@ private:
     std::atomic<bool> m_running{ false };
     std::thread m_cleanerThread;
     int m_cleanupIntervalMinutes;
-
-    // Функция для получения NtSetSystemInformation
     pNtSetSystemInformation GetNtSetSystemInformation() {
         static pNtSetSystemInformation fn = nullptr;
         if (!fn) {
@@ -61,18 +53,14 @@ private:
         }
         return fn;
     }
-
-    // Получаем текущее использование памяти процессом
     SIZE_T GetCurrentMemoryUsage() {
         PROCESS_MEMORY_COUNTERS pmc;
         pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
         if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-            return pmc.WorkingSetSize; // Физическая память
+            return pmc.WorkingSetSize; 
         }
         return 0;
     }
-
-    // Принудительная очистка кучи процесса
     void ForceHeapCleanup() {
         // Очищаем кучу по умолчанию
         HANDLE hHeap = GetProcessHeap();
@@ -93,13 +81,9 @@ private:
             }
         }
     }
-
-    // Очистка рабочего набора памяти (Working Set)
     void TrimWorkingSet() {
         SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     }
-
-    // Очистка системного кэша (только если есть права)
     void TryClearSystemCache() {
         pNtSetSystemInformation NtSetSystemInfo = GetNtSetSystemInformation();
         if (!NtSetSystemInfo) return;
@@ -162,11 +146,6 @@ public:
 
                 if (freed > 10 * 1024 * 1024) { // Если освободили больше 10 МБ
                     Log((std::string("[LOGEN] Memory cleaned: ") + FormatBytes(beforeMem) + " -> " + FormatBytes(afterMem) + " (freed " + FormatBytes(freed) + ")").c_str());
-                }
-                static DWORD lastFullReset = 0;
-                if (GetTickCount() - lastFullReset > 5 * 60 * 1000) {  // 30 минут
-                    EPS::CleanupMemory(true);
-                    lastFullReset = GetTickCount();
                 }
                 auto elapsed = std::chrono::steady_clock::now() - startTime;
                 auto sleepTime = std::chrono::minutes(m_cleanupIntervalMinutes) - elapsed;

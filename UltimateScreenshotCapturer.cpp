@@ -67,14 +67,29 @@ UltimateScreenshotCapturer::~UltimateScreenshotCapturer() {
 bool UltimateScreenshotCapturer::Initialize() {
     if (m_initialized) return true;
 
-    if (!m_gameWindow) {
-        m_gameWindow = FindDayZWindow();
+    Log("[LOGEN] Screenshot capturer: looking for DayZ window...");
+
+    // Пытаемся найти окно несколько раз
+    for (int attempt = 0; attempt < 5; attempt++) {
+        if (attempt > 0) {
+            LogFormat("[LOGEN] Window not found, retry %d/5...", attempt + 1);
+            Sleep(2000);
+        }
+
+        if (!m_gameWindow) {
+            m_gameWindow = FindDayZWindow();
+        }
+
+        if (m_gameWindow) {
+            m_initialized = true;
+            Log("[LOGEN] Screenshot capturer initialized: Window found");
+            return true;
+        }
     }
-
-    m_initialized = (m_gameWindow != nullptr);
-    return m_initialized;
+    Log("[LOGEN] WARNING: DayZ window not found, but trying fallback capture");
+    m_initialized = true; 
+    return true;         
 }
-
 void UltimateScreenshotCapturer::Shutdown() {
     m_initialized = false;
 

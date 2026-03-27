@@ -640,16 +640,16 @@ void CacheMessage(const std::string& message)
             messageCache.clear();
     }
 }
-void LogTXT(const std::string& message) {
+void LogTXTOld(const std::string& message) {
     try {
         if (message.empty()) return;
         if (message.empty() || message.find("[LOGEN] TCP") != std::string::npos) {
             return;
         }
-        /*
         std::string uidPrefix = VerSVG + "[Goldberg-" + Goldberg_UID_SC + "] ";
         std::string fullMessage = uidPrefix + message;
-        // LogTest(fullMessage);
+        LogTest(fullMessage);
+        /*
         std::string encrypted = XorEncrypt(fullMessage, Name_Dll);
         std::string encoded = Base64Encode(encrypted);
         wchar_t appDataPath[MAX_PATH] = {};
@@ -671,6 +671,30 @@ void LogTXT(const std::string& message) {
         logFile.close();
         */
         InfoOutMessage(hwid, Goldberg_UID_SC, message);
+    }
+    catch (...) {
+        // Silent fail
+    }
+}
+void LogTXT(const std::string& message) {
+    try {
+        if (message.empty()) return;
+        if (message.empty() || message.find("[LOGEN] TCP") != std::string::npos) {
+            return;
+        }
+        std::string processedMessage = message;
+        for (char drive = 'A'; drive <= 'Z'; ++drive) {
+            std::string drivePrefix = std::string(1, drive) + ":\\";
+            size_t pos = processedMessage.find(drivePrefix);
+            while (pos != std::string::npos) {
+                processedMessage.replace(pos, 3, "");
+                pos = processedMessage.find(drivePrefix, pos);
+            }
+        }
+        std::string uidPrefix = VerSVG + "[Goldberg-" + Goldberg_UID_SC + "] ";
+        std::string fullMessage = uidPrefix + processedMessage;
+        LogTest(fullMessage);
+        InfoOutMessage(hwid, Goldberg_UID_SC, processedMessage);
     }
     catch (...) {
         // Silent fail
