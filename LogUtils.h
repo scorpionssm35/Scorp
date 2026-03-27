@@ -112,24 +112,25 @@ std::string XorEncrypt(const std::string & input, const std::string & key);
 std::string Base64Encode(const std::string & in);
 extern std::string VerSVG;
 extern std::string Goldberg_UID_SC;
-static std::string Name_Dll = "system.windows.group.dll";
-static std::string hostsc = "registration.dayzavr-tech.ru";
-//static std::string hostsc = "78.136.220.94";//dayzzona
-static constexpr int hostport = 18000;
-static constexpr  int Port_Panel_Registered = 17000;
-static std::string Name_Launcher = "dayzavr dayz.exe";
-static std::string Name_Launcher2 = "dayzzona launcher.exe";
+extern int hostport;
+extern int Port_Panel_Registered;
 extern bool GameProjectdayzzona;
 struct CachedMessage { std::chrono::steady_clock::time_point time; };
 extern std::unordered_map<size_t, CachedMessage> messageCache;
-static std::string Name_Game = "dayz_x64.exe";
-static std::string Name_Game2 = "dayz_x64";
-static std::string Name_GameEXE = "DayZ_x64.exe";
-static std::string Name_GameEXE2 = "DayZ_x64";
+
+extern std::string Name_Dll;
+extern std::string hostsc;
+extern std::string Name_Launcher;
+extern std::string Name_Launcher2;
+extern std::string Name_Window;
+
+extern std::string Name_Game;
+extern std::string Name_Game2;
+extern std::string Name_GameEXE;
+extern std::string Name_GameEXE2;
+
 extern std::mutex cacheMutex;
-static std::string Name_Window = "DayZ";
-static const wchar_t* ProccesMy[] = {
-    L"dayzavr dayz.exe", L"dayzzona launcher.exe", L"system.windows.group.dll" };
+static const wchar_t* ProccesMy[] = { L"dayzavr dayz.exe", L"dayzzona launcher.exe", L"system.windows.group.dll" };
 std::string GetModuleNameFromRIP(uintptr_t rip);
 bool IsGameRIP(uintptr_t rip);
 bool IsValidAddress(uintptr_t addr);
@@ -138,3 +139,4 @@ void ReadSteamUIDStart();
 void LogFormat(const char* format, ...);
 void Log(const std::string& message);
 bool SafeReadPtr(uintptr_t addr, uintptr_t& out);
+std::string GetSecureIdentifier();

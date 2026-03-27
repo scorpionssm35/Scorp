@@ -161,10 +161,7 @@ public:
                 SIZE_T freed = (beforeMem > afterMem) ? (beforeMem - afterMem) : 0;
 
                 if (freed > 10 * 1024 * 1024) { // Если освободили больше 10 МБ
-                    Log((std::string("[LOGEN] Memory cleaned: ") +
-                        FormatBytes(beforeMem) + " -> " +
-                        FormatBytes(afterMem) + " (freed " +
-                        FormatBytes(freed) + ")").c_str());
+                    Log((std::string("[LOGEN] Memory cleaned: ") + FormatBytes(beforeMem) + " -> " + FormatBytes(afterMem) + " (freed " + FormatBytes(freed) + ")").c_str());
                 }
                 static DWORD lastFullReset = 0;
                 if (GetTickCount() - lastFullReset > 5 * 60 * 1000) {  // 30 минут

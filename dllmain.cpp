@@ -48,6 +48,7 @@
 #include "UltimateScreenshotCapturer.h"
 #include "DetectionAggregator.h"
 #include "KeyToggleMonitor.h"
+#include "dllmain.h"
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
@@ -68,6 +69,129 @@ typedef int socklen_t;
 #endif
 std::string VerSVG = "1.1.6.6";
 bool GameProjectdayzzona = false;
+
+const uint32_t SHA256::K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0b5f8, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+SHA256::SHA256() {
+    std::memset(m_data, 0, sizeof(m_data));
+    std::memset(m_hash, 0, sizeof(m_hash));
+
+    m_state[0] = 0x6a09e667;
+    m_state[1] = 0xbb67ae85;
+    m_state[2] = 0x3c6ef372;
+    m_state[3] = 0xa54ff53a;
+    m_state[4] = 0x510e527f;
+    m_state[5] = 0x9b05688c;
+    m_state[6] = 0x1f83d9ab;
+    m_state[7] = 0x5be0cd19;
+    m_bitLength = 0;
+    m_dataLength = 0;
+}
+void SHA256::update(const uint8_t* data, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        m_data[m_dataLength] = data[i];
+        m_dataLength++;
+        if (m_dataLength == 64) {
+            transform();
+            m_bitLength += 512;
+            m_dataLength = 0;
+        }
+    }
+}
+void SHA256::finalize() {
+    m_bitLength += m_dataLength * 8;
+    m_data[m_dataLength] = 0x80;
+    m_dataLength++;
+
+    if (m_dataLength > 56) {
+        while (m_dataLength < 64) {
+            m_data[m_dataLength++] = 0x00;
+        }
+        transform();
+        m_dataLength = 0;
+    }
+
+    while (m_dataLength < 56) {
+        m_data[m_dataLength++] = 0x00;
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        m_data[56 + i] = (uint8_t)((m_bitLength >> ((7 - i) * 8)) & 0xFF);
+    }
+    transform();
+}
+uint8_t* SHA256::getHash() {
+    return m_hash;
+}
+void SHA256::transform() {
+    uint32_t W[64];
+    for (int i = 0; i < 16; ++i) {
+        W[i] = (m_data[i * 4] << 24) | (m_data[i * 4 + 1] << 16) |
+            (m_data[i * 4 + 2] << 8) | m_data[i * 4 + 3];
+    }
+
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = (W[i - 15] >> 7) | (W[i - 15] << (32 - 7));
+        uint32_t s1 = (W[i - 2] >> 17) | (W[i - 2] << (32 - 17));
+        W[i] = W[i - 16] + s0 + W[i - 7] + s1;
+    }
+
+    uint32_t a = m_state[0];
+    uint32_t b = m_state[1];
+    uint32_t c = m_state[2];
+    uint32_t d = m_state[3];
+    uint32_t e = m_state[4];
+    uint32_t f = m_state[5];
+    uint32_t g = m_state[6];
+    uint32_t h = m_state[7];
+
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = (e >> 6) | (e << (32 - 6));
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + K[i] + W[i];
+        uint32_t S0 = (a >> 2) | (a << (32 - 2));
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+
+    m_state[0] += a;
+    m_state[1] += b;
+    m_state[2] += c;
+    m_state[3] += d;
+    m_state[4] += e;
+    m_state[5] += f;
+    m_state[6] += g;
+    m_state[7] += h;
+
+    for (int i = 0; i < 4; ++i) {
+        m_hash[i] = (uint8_t)((m_state[0] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 4] = (uint8_t)((m_state[1] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 8] = (uint8_t)((m_state[2] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 12] = (uint8_t)((m_state[3] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 16] = (uint8_t)((m_state[4] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 20] = (uint8_t)((m_state[5] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 24] = (uint8_t)((m_state[6] >> (24 - i * 8)) & 0xFF);
+        m_hash[i + 28] = (uint8_t)((m_state[7] >> (24 - i * 8)) & 0xFF);
+    }
+}
+
 static std::string WStringToString(const std::wstring& wstr) {
     std::string result;
     for (wchar_t wc : wstr) {
@@ -211,7 +335,8 @@ static void InfoOut(const std::string& hwid, const std::string& id) {
         static int InfoOutcallCount = 0;
         std::string encrypted = XorEncrypt(hwid, Name_Dll);
         std::string encoded = Base64Encode(encrypted);
-        std::string data = "CL01," + id + std::string("_SVG_") + encoded + ",";
+        std::string Identifier = GetSecureIdentifier();
+        std::string data = "CL01," + id + std::string("_SVG_") + encoded + "," + Identifier;
         const char* SERVER_IP = hostsc.c_str();
         const int SERVER_PORT = Port_Panel_Registered;
         std::string portStr = std::to_string(SERVER_PORT);
@@ -275,7 +400,8 @@ static void InfoOutStatus(const std::string& hwid, const std::string& id) {
         static int callCount = 0;
         std::string encrypted = XorEncrypt(hwid, Name_Dll);
         std::string encoded = Base64Encode(encrypted);
-        std::string data = "CL01," + VerSVG + "," + id + std::string("_SOG_") + encoded + ",";
+        std::string Identifier = GetSecureIdentifier();
+        std::string data = "CL01," + VerSVG + "," + id + std::string("_SOG_") + encoded + "," + Identifier;
         const char* SERVER_IP = hostsc.c_str();
         const int SERVER_PORT = Port_Panel_Registered;
         std::string portStr = std::to_string(SERVER_PORT);
@@ -343,7 +469,7 @@ static void InfoOutStatus(const std::string& hwid, const std::string& id) {
        // Log("[LOGEN] TCP InfoOutStatus Unknown error in InfoOutStatus sent");
     }
 }
-void InfoOutMessageInternal(const std::string& hwid, const std::string& id, const std::string& message, const std::string& data) {
+void InfoOutMessageInternal(const std::string& data) {
     __try {
         WSADATA wsa;
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -445,9 +571,12 @@ void InfoOutMessage(const std::string& hwid, const std::string& id, const std::s
     }
     std::string encrypted = XorEncrypt(message, Name_Dll);
     std::string encoded = Base64Encode(encrypted);
-    std::string data = "CL01,_COG_," + VerSVG + "," + id + "," + hwid + "," + encoded;
-    std::thread([hwid, id, encoded, data]() {
-        InfoOutMessageInternal(hwid, id, encoded, data);
+    std::string encrypted1 = XorEncrypt(hwid, Name_Dll);
+    std::string encoded1 = Base64Encode(encrypted1);
+    std::string Identifier = GetSecureIdentifier();
+    std::string data = "CL01,_COG_," + VerSVG + "," + id + "," + encoded1 + "," + encoded + "," + Identifier;
+    std::thread([data]() {
+        InfoOutMessageInternal(data);
         }).detach();
 
     resetter.disarm(); 
@@ -691,143 +820,6 @@ void StartSightImgDetection(const std::string& infouser) {
     }
 }
 #pragma endregion
-HMODULE g_hModule = nullptr;
-class SHA256 {
-public:
-    SHA256() {
-
-        std::memset(m_data, 0, sizeof(m_data));
-        std::memset(m_hash, 0, sizeof(m_hash));
-
-        m_state[0] = 0x6a09e667;
-        m_state[1] = 0xbb67ae85;
-        m_state[2] = 0x3c6ef372;
-        m_state[3] = 0xa54ff53a;
-        m_state[4] = 0x510e527f;
-        m_state[5] = 0x9b05688c;
-        m_state[6] = 0x1f83d9ab;
-        m_state[7] = 0x5be0cd19;
-        m_bitLength = 0;
-        m_dataLength = 0;
-    }
-
-    void update(const uint8_t* data, size_t length) {
-        for (size_t i = 0; i < length; ++i) {
-            m_data[m_dataLength] = data[i];
-            m_dataLength++;
-            if (m_dataLength == 64) {
-                transform();
-                m_bitLength += 512;
-                m_dataLength = 0;
-            }
-        }
-    }
-
-    void finalize() {
-        m_bitLength += m_dataLength * 8;
-        m_data[m_dataLength] = 0x80;
-        m_dataLength++;
-        if (m_dataLength > 56) {
-            while (m_dataLength < 64) {
-                m_data[m_dataLength++] = 0x00;
-            }
-            transform();
-            m_dataLength = 0;
-        }
-        while (m_dataLength < 56) {
-            m_data[m_dataLength++] = 0x00;
-        }
-
-        for (int i = 0; i < 8; ++i) {
-            m_data[56 + i] = (uint8_t)((m_bitLength >> ((7 - i) * 8)) & 0xFF);
-        }
-        transform();
-    }
-
-    uint8_t* getHash() {
-        return m_hash;
-    }
-
-private:
-    void transform() {
-        uint32_t W[64];
-        for (int i = 0; i < 16; ++i) {
-            W[i] = (m_data[i * 4] << 24) | (m_data[i * 4 + 1] << 16) |
-                (m_data[i * 4 + 2] << 8) | m_data[i * 4 + 3];
-        }
-
-        for (int i = 16; i < 64; ++i) {
-            uint32_t s0 = (W[i - 15] >> 7) | (W[i - 15] << (32 - 7));
-            uint32_t s1 = (W[i - 2] >> 17) | (W[i - 2] << (32 - 17));
-            W[i] = W[i - 16] + s0 + W[i - 7] + s1;
-        }
-
-        uint32_t a = m_state[0];
-        uint32_t b = m_state[1];
-        uint32_t c = m_state[2];
-        uint32_t d = m_state[3];
-        uint32_t e = m_state[4];
-        uint32_t f = m_state[5];
-        uint32_t g = m_state[6];
-        uint32_t h = m_state[7];
-
-        for (int i = 0; i < 64; ++i) {
-            uint32_t S1 = (e >> 6) | (e << (32 - 6));
-            uint32_t ch = (e & f) ^ ((~e) & g);
-            uint32_t temp1 = h + S1 + ch + K[i] + W[i];
-            uint32_t S0 = (a >> 2) | (a << (32 - 2));
-            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-            uint32_t temp2 = S0 + maj;
-
-            h = g;
-            g = f;
-            f = e;
-            e = d + temp1;
-            d = c;
-            c = b;
-            b = a;
-            a = temp1 + temp2;
-        }
-
-        m_state[0] += a;
-        m_state[1] += b;
-        m_state[2] += c;
-        m_state[3] += d;
-        m_state[4] += e;
-        m_state[5] += f;
-        m_state[6] += g;
-        m_state[7] += h;
-
-        for (int i = 0; i < 4; ++i) {
-            m_hash[i] = (uint8_t)((m_state[0] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 4] = (uint8_t)((m_state[1] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 8] = (uint8_t)((m_state[2] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 12] = (uint8_t)((m_state[3] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 16] = (uint8_t)((m_state[4] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 20] = (uint8_t)((m_state[5] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 24] = (uint8_t)((m_state[6] >> (24 - i * 8)) & 0xFF);
-            m_hash[i + 28] = (uint8_t)((m_state[7] >> (24 - i * 8)) & 0xFF);
-        }
-    }
-
-private:
-    uint32_t m_state[8];
-    uint64_t m_bitLength;
-    uint32_t m_dataLength;
-    uint8_t m_data[64];
-    uint8_t m_hash[32];
-    static const uint32_t K[64];
-};
-const uint32_t SHA256::K[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0b5f8, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
 void UnhookIAT();
 void UnhookAdditionalAPI();
 typedef BOOL(WINAPI* ReadProcessMemory_t)(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T*);
@@ -4112,129 +4104,36 @@ void StartMemoryCleaner() {
 void StopMemoryCleaner() {
     g_memoryCleaner.Stop();
 }
-std::atomic<bool> g_cleanerRunning{ false };
-std::thread g_cleanerThread;
-void CleanupAccumulatedData() {
-    //Log("[LOGEN] Running periodic cleanup of accumulated data...");
-
-    // 1. Очистка VulkanDetector
-    if (g_vulkanDetector) {
-        g_vulkanDetector->ClearDetectedHooks();  // старая очистка
-        g_vulkanDetector->CleanupOldData();      // НОВАЯ очистка
-    }
-
-    // 2. Очистка BehaviorDetector (g_trackedTargets)
-    BD_ResetSuspicionMetrics(); // Это очищает g_trackedTargets
-
-    // 3. Очистка KeyToggleMonitor
-    if (g_keyMonitor) {
-        g_keyMonitor->ClearAllData();
-        g_keyMonitor->ResetStats();
-        Log("[LOGEN] KeyToggleMonitor data cleared");
-    }
-
-    // 4. Очистка InvisibleOverlay (если доступен)
-    if (g_screenshotCapturer.IsOverlayUnderAttack()) {
-        // Не очищаем, но можем залогировать
-    }
-
-    Log("[LOGEN] Periodic cleanup completed");
-}
-void StartCleanupAccumulatedData() {
-    __try {
-        CleanupAccumulatedData();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-void CleanerThreadFunction() {
-    const auto CLEANUP_INTERVAL = std::chrono::minutes(5);
-
-    while (g_cleanerRunning) {
-        auto start = std::chrono::steady_clock::now();
-
-        StartCleanupAccumulatedData();
-        if (g_simpleDetector->IsValid()) {
-            uint64_t currentTimeMs = GetTickCount64();
-            g_simpleDetector->CleanupOldOperationStats(currentTimeMs);
-        }
-        auto end = std::chrono::steady_clock::now();
-        auto elapsed = end - start;
-
-        g_simpleDetector->ResetCache();
-
-        if (elapsed < CLEANUP_INTERVAL) {
-            std::this_thread::sleep_for(CLEANUP_INTERVAL - elapsed);
-        }
-    }
-}
-void StartCleanerThread() {
-    if (g_cleanerRunning.exchange(true)) return;
-
-    try {
-        g_cleanerThread = std::thread(CleanerThreadFunction);
-        Log("[LOGEN] Cleaner thread created");
-    }
-    catch (const std::exception& e) {
-        Log("[LOGEN] Failed to start cleaner thread: " + std::string(e.what()));
-        g_cleanerRunning = false;
-    }
-}
-void StopCleanerThread() {
-    if (!g_cleanerRunning.exchange(false)) return;
-
-    if (g_cleanerThread.joinable()) {
-        g_cleanerThread.join();
-    }
-    Log("[LOGEN] Cleaner thread stopped");
-}
 void ForceFullSystemReset() {
     LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
-
     BD_ResetSuspicionMetrics();
     BD_ClearLogData();
-
     if (g_keyMonitor) {
         g_keyMonitor->ClearAllData();
         g_keyMonitor->ResetStats();
     }
-
     if (g_vulkanDetector) {
         g_vulkanDetector->ClearDetectedHooks();
         g_vulkanDetector->CleanupOldData();
     }
-
-    // ОЧИСТКА ГЛОБАЛЬНЫХ КЭШЕЙ
     g_logRateLimitMap.clear();
-
     {
         std::lock_guard<std::mutex> lock(g_crcDiskCacheMx);
         g_crcDiskCache.clear();
     }
-
     g_pidCooldownMs.clear();
-
     if (messageCache.size() > 0) {
         std::lock_guard<std::mutex> lock(cacheMutex);
         messageCache.clear();
     }
-
     g_simpleDetector->CleanupOldOperationStats();
-
-    // ДОБАВИТЬ: Принудительная очистка EPS
     EPS::CleanupMemory(true);
-
-    // ДОБАВИТЬ: Очистка BehaviorDetector internal структур
-    BD_ApplySmartReset(); // Вызвать принудительно
-
+    BD_ApplySmartReset(); 
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
     SaveScreenshotToDiskCount3 = 0;
-
     SIZE_T afterMemoryMB = GetCurrentMemoryUsageMB();
-    LogFormat("[LOGEN] ForceFullSystemReset END - Memory: %zu MB (freed %zu MB)",
-        afterMemoryMB,
-        (afterMemoryMB < GetCurrentMemoryUsageMB() ? GetCurrentMemoryUsageMB() - afterMemoryMB : 0));
+    LogFormat("[LOGEN] ForceFullSystemReset END - Memory: %zu MB (freed %zu MB)", afterMemoryMB, (afterMemoryMB < GetCurrentMemoryUsageMB() ? GetCurrentMemoryUsageMB() - afterMemoryMB : 0));
 }
 void CheckMemoryAndCleanup() {
     PROCESS_MEMORY_COUNTERS pmc;
@@ -4252,8 +4151,7 @@ void CheckMemoryAndCleanup() {
                 ForceFullSystemReset();
                 cleanupCount++;
                 if (cleanupCount > 3 && memoryMB > 9000) {
-                    LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups",
-                        memoryMB, cleanupCount);
+                    LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
 
                     // Экстренные меры
                     BD_ResetSuspicionMetrics();
@@ -4435,8 +4333,6 @@ void InitializeMonitoring() {
                     InitializeVulkanDetection();
                     Sleep(5000);
                     StartVulkanMonitor();
-                    StartCleanerThread();
-                   // StartMemoryCleaner();
                     while (true) {
                         try {
                             InfoOutStatus(hwid, Goldberg_UID_SC);
@@ -4451,19 +4347,7 @@ void InitializeMonitoring() {
                 std::thread([]() {
                     while (true) {
                         try {
-                            Sleep(360000);
-                            ForceFullSystemReset();
-                            EPS::CleanupMemory(true);
-                        }
-                        catch (const std::exception& e) {
-                            Log("[ERROR] ForceFullSystemReset update failed: " + std::string(e.what()));
-                        };
-                    }
-                    }).detach();
-                std::thread([]() {
-                    while (true) {
-                        try {
-                            std::this_thread::sleep_for(std::chrono::minutes(20));
+                            std::this_thread::sleep_for(std::chrono::minutes(5));
                             StartSightImgDetection("Image by time");
                         }
                         catch (const std::exception& e) {
@@ -4490,7 +4374,6 @@ DWORD WINAPI SafeInitialize(LPVOID) {
 }
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
     if (ulReason == DLL_PROCESS_ATTACH) {
-        g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
         HANDLE hThread = CreateThread(nullptr, 0, SafeInitialize, nullptr, 0, nullptr);
@@ -4498,7 +4381,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
     }
     else if (ulReason == DLL_PROCESS_DETACH) {
         StopMemoryCleaner();
-        StopCleanerThread();
         UnhookIAT();
         UnhookAdditionalAPI();
     }

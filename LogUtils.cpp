@@ -38,6 +38,151 @@
 #include "dllmain.h"
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "advapi32.lib")
+
+std::string Name_Dll = "system.windows.group.dll";
+std::string hostsc = "registration.dayzavr-tech.ru";
+//std::string hostsc = "78.136.220.94";//dayzzona
+std::string Name_Launcher = "dayzavr dayz.exe";
+std::string Name_Launcher2 = "dayzzona launcher.exe";
+std::string Name_Window = "DayZ";
+int hostport = 18000;
+int Port_Panel_Registered = 17000;
+std::string Name_Game = "dayz_x64.exe";
+std::string Name_Game2 = "dayz_x64";
+std::string Name_GameEXE = "DayZ_x64.exe";
+std::string Name_GameEXE2 = "DayZ_x64";
+
+std::string Base64Encode(const std::string& in) {
+    static const char* base64_chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string out;
+    int val = 0, valb = -6;
+    for (uint8_t c : in) {
+        val = (val << 8) + c;
+        valb += 8;
+        while (valb >= 0) {
+            out.push_back(base64_chars[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) out.push_back(base64_chars[((val << 8) >> (valb + 8)) & 0x3F]);
+    while (out.size() % 4) out.push_back('=');
+    return out;
+}
+std::string XorEncrypt(const std::string& input, const std::string& key) {
+    std::string result = input;
+    for (size_t i = 0; i < input.size(); ++i)
+        result[i] ^= key[i % key.size()];
+    return result;
+}
+static std::string GetCurrentName() {
+    HMODULE hModule = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        (LPCWSTR)&GetCurrentName, &hModule);
+
+    if (!hModule) {
+        return "Unknown.dll";
+    }
+
+    WCHAR dllPathW[MAX_PATH];
+    DWORD result = GetModuleFileNameW(hModule, dllPathW, MAX_PATH);
+
+    if (result == 0 || result == MAX_PATH) {
+        return "Unknown.dll";
+    }
+    int bufferSize = WideCharToMultiByte(CP_UTF8, 0, dllPathW, -1, NULL, 0, NULL, NULL);
+    if (bufferSize <= 0) {
+        return "Unknown.dll";
+    }
+
+    std::string path(bufferSize - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, dllPathW, -1, &path[0], bufferSize, NULL, NULL);
+
+    size_t pos = path.find_last_of("\\/");
+    if (pos != std::string::npos) {
+        return path.substr(pos + 1);
+    }
+    return path;
+}
+static std::string GetDLLSHA256() {
+    HMODULE hModule = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        (LPCWSTR)&GetCurrentName, &hModule);
+
+    if (!hModule) {
+        return "";
+    }
+
+    WCHAR dllPathW[MAX_PATH];
+    GetModuleFileNameW(hModule, dllPathW, MAX_PATH);
+    HANDLE hFile = CreateFileW(dllPathW, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        WCHAR tempPath[MAX_PATH];
+        WCHAR tempFile[MAX_PATH];
+
+        if (GetTempPathW(MAX_PATH, tempPath)) {
+            const WCHAR* fileName = wcsrchr(dllPathW, L'\\');
+            if (!fileName) fileName = wcsrchr(dllPathW, L'/');
+            if (!fileName) fileName = dllPathW;
+            else fileName++; 
+            if (GetTempFileNameW(tempPath, L"DLL", 0, tempFile)) {
+                if (CopyFileW(dllPathW, tempFile, FALSE)) {
+                    hFile = CreateFileW(tempFile, GENERIC_READ,
+                        FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                        FILE_FLAG_DELETE_ON_CLOSE, NULL); 
+                }
+            }
+        }
+
+        if (hFile == INVALID_HANDLE_VALUE) {
+            return "";
+        }
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize == 0) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    std::vector<BYTE> buffer(fileSize);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, buffer.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    CloseHandle(hFile);
+    SHA256 sha;
+    sha.update(buffer.data(), buffer.size());
+    sha.finalize();
+
+    uint8_t* hash = sha.getHash();
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 32; i++) {
+        ss << std::setw(2) << (int)hash[i];
+    }
+    return ss.str();
+}
+std::string GetSecureIdentifier() {
+    std::string dllName = GetCurrentName();
+    std::string sha256Hash = GetDLLSHA256();
+
+    if (sha256Hash.empty()) {
+        std::string encrypted = XorEncrypt(dllName + "|", Name_Dll);
+        std::string encoded = Base64Encode(encrypted);
+        return encoded;
+    }
+    std::string identifier = dllName + "|" + sha256Hash;
+    std::string encrypted = XorEncrypt(identifier, Name_Dll);
+    std::string encoded = Base64Encode(encrypted);
+    return encoded;
+}
 static std::chrono::steady_clock::time_point lastForcedCleanup = std::chrono::steady_clock::now();
 std::string GetModuleNameFromRIP(uintptr_t rip) {
     HMODULE hMods[1024];
@@ -408,30 +553,6 @@ void ReadSteamUIDStart() {
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 #pragma endregion
-std::string Base64Encode(const std::string& in) {
-    static const char* base64_chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    std::string out;
-    int val = 0, valb = -6;
-    for (uint8_t c : in) {
-        val = (val << 8) + c;
-        valb += 8;
-        while (valb >= 0) {
-            out.push_back(base64_chars[(val >> valb) & 0x3F]);
-            valb -= 6;
-        }
-    }
-    if (valb > -6) out.push_back(base64_chars[((val << 8) >> (valb + 8)) & 0x3F]);
-    while (out.size() % 4) out.push_back('=');
-    return out;
-}
-std::string XorEncrypt(const std::string& input, const std::string& key) {
-    std::string result = input;
-    for (size_t i = 0; i < input.size(); ++i)
-        result[i] ^= key[i % key.size()];
-    return result;
-}
 void LogTest(const std::string& message) {
     try {
         if (message.empty()) return;
