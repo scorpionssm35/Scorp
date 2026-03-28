@@ -184,13 +184,16 @@ std::string DetectionAggregator::PatternToString(KernelCheatDetector::CheatPatte
 }
 void DetectionAggregator::NotifyDangerousPlayer(uint64_t entityId)
 {
+    if (entityId == 0 || entityId > 0x7FFFFFFFFFFFULL) { 
+        return;
+    }
     float currentScore = g_suspicionMetrics.espScore +
         g_suspicionMetrics.aimbotScore +
         g_suspicionMetrics.speedhackScore +
         g_suspicionMetrics.wallhackScore +
         g_suspicionMetrics.triggerbotScore +
         (g_suspicionMetrics.totalFlags * 5.0);
-    PlayerRiskLevel level = (currentScore >= 70.0f) ? PlayerRiskLevel::High :
+    PlayerRiskLevel level = (currentScore >= 120.0f) ? PlayerRiskLevel::High :
         (currentScore >= 40.0f) ? PlayerRiskLevel::Medium :
         PlayerRiskLevel::Low;
 

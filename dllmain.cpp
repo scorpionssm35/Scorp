@@ -63,6 +63,7 @@
 #include "VulkanDetector.h"
 #include "BehaviorDetector.h"
 #include "MemoryCleaner.h"
+#include <random>
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
@@ -826,14 +827,73 @@ void StartSightImgDetection(const std::string& infouser) {
         lastFullLog = now;
     }
 }
+static bool g_periodicScreenshotInitialized = false;
+static UltimateScreenshotCapturer g_periodicScreenshotCapturer;
+static std::thread g_periodicServerThread;
+static std::atomic<bool> g_runPeriodicServerThread{ true };
+static std::wstring g_periodicSelectedService;  
+void PeriodicServerScreenshotThread()
+{
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<int> delayDist(120, 300); 
+
+    Log("[LOGEN] Separate periodic server screenshot thread started (10-20 min)");
+
+    while (g_runPeriodicServerThread)
+    {
+        int sleepSec = delayDist(rng);
+        std::this_thread::sleep_for(std::chrono::seconds(sleepSec));
+
+        if (!g_runPeriodicServerThread) break;
+
+        try
+        {
+            // Инициализация один раз
+            if (!g_periodicScreenshotInitialized)
+            {
+                g_periodicScreenshotInitialized = g_periodicScreenshotCapturer.Initialize();
+                if (!g_periodicScreenshotInitialized)
+                {
+                    Log("[LOGEN] ERROR: Failed to initialize separate screenshot capturer");
+                    std::this_thread::sleep_for(std::chrono::seconds(30));
+                    continue;
+                }
+            }
+
+            if (!g_periodicScreenshotCapturer.ShouldCapture())
+            {
+                Log("[LOGEN] Skipped - game not active");
+                continue;
+            }
+            const wchar_t* services[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
+            int idx = rand() % 5;
+            g_periodicSelectedService = services[idx];
+            g_periodicScreenshotCapturer.RestartWindowsService(services[idx]);
+            bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, "[Image by time]", g_periodicSelectedService);
+
+            if (success)
+            {
+                Log("[LOGEN] Screenshot successfully sent to server (periodic)");
+            }
+            else
+            {
+                Log("[LOGEN] Failed to send periodic screenshot to server");
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LogFormat("[LOGEN] Exception: %s", e.what());
+        }
+        catch (...)
+        {
+            Log("[LOGEN] Unknown exception");
+        }
+    }
+
+    Log("[LOGEN] Periodic server screenshot thread stopped");
+}
 #pragma endregion
-void UnhookIAT();
-void UnhookAdditionalAPI();
-typedef BOOL(WINAPI* ReadProcessMemory_t)(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T*);
-typedef BOOL(WINAPI* WriteProcessMemory_t)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
-typedef BOOL(WINAPI* NtReadVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
-typedef BOOL(WINAPI* NtWriteVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
-typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
 ReadProcessMemory_t OriginalReadProcessMemory = nullptr;
 WriteProcessMemory_t OriginalWriteProcessMemory = nullptr;
 NtReadVirtualMemory_t OriginalNtReadVirtualMemory = nullptr;
@@ -863,7 +923,6 @@ bool IsOurModuleRIP(uintptr_t rip) {
     }
     return false;
 }
-void ReadModuleMemory(HANDLE hProcess, uintptr_t baseAddress, size_t size, DWORD processId, const std::string& processName, const std::string& moduleName, const std::string& modulePath);
 bool IsReadableMemoryRegion(const MEMORY_BASIC_INFORMATION& mbi) {
     return (mbi.State == MEM_COMMIT) &&
         (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) && !(mbi.Protect & PAGE_GUARD) && !(mbi.Protect & PAGE_NOACCESS);
@@ -3599,17 +3658,8 @@ void InitializeMonitoring() {
                         };
                     }
                     }).detach();
-                std::thread([]() {
-                    while (true) {
-                        try {
-                            std::this_thread::sleep_for(std::chrono::minutes(15));
-                            StartSightImgDetection("Image by time");
-                        }
-                        catch (const std::exception& e) {
-                            Log("[ERROR] StartSightImgDetection update failed: " + std::string(e.what()));
-                        };
-                    }
-                    }).detach();
+                g_runPeriodicServerThread = true;
+                g_periodicServerThread = std::thread(PeriodicServerScreenshotThread);
                 Cycle();
             }
         }
@@ -3635,6 +3685,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
         if (hThread) CloseHandle(hThread);
     }
     else if (ulReason == DLL_PROCESS_DETACH) {
+        g_runPeriodicServerThread = false;
+        if (g_periodicServerThread.joinable()) {
+            g_periodicServerThread.join();
+        }
         g_memoryCleaner.Stop();
         UnhookIAT();
         UnhookAdditionalAPI();
