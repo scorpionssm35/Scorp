@@ -30,3 +30,6 @@ typedef BOOL(WINAPI* WriteProcessMemory_t)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE
 typedef BOOL(WINAPI* NtReadVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
 typedef BOOL(WINAPI* NtWriteVirtualMemory_t)(HANDLE, PVOID, PVOID, ULONG, PULONG);
 typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
+extern std::atomic<int> g_consecutiveSkippedCaptures;
+extern std::atomic<bool> g_forceScreenshotMode;
+extern std::atomic<uint64_t> g_forceModeStartTime;

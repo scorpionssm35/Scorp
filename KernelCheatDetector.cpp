@@ -6,6 +6,35 @@
 #include "DetectionAggregator.h"
 
 #pragma comment(lib, "Psapi.lib")
+std::string GetModulePathSimple(uintptr_t address) {
+    char modulePath[MAX_PATH] = { 0 };
+    HMODULE hMod = nullptr;
+
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCSTR>(address), &hMod)) {
+        if (GetModuleFileNameA(hMod, modulePath, MAX_PATH) > 0) {
+            return std::string(modulePath);
+        }
+    }
+    return "";
+}
+bool IsWhitelistedPrivateRegion(const std::string& path) {
+    if (path.empty()) return false;
+
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    if (!Name_Dll.empty() && lower.find(Name_Dll) != std::string::npos) return true;
+    if (!Name_Launcher.empty() && lower.find(Name_Launcher) != std::string::npos) return true;
+    if (!Name_Launcher2.empty() && lower.find(Name_Launcher2) != std::string::npos) return true;
+
+    if (lower.find("armourycrate") != std::string::npos) return true;
+    if (lower.find("aura") != std::string::npos) return true;
+    if (lower.find("\\windows\\") != std::string::npos) return true;
+    if (lower.find("\\program files\\") != std::string::npos) return true;
+
+    return false;
+}
 uint64_t KernelCheatDetector::FNV1aHash(const void* data, size_t size)
 {
     if (!data || size == 0) return 0;
@@ -71,25 +100,55 @@ bool KernelCheatDetector::CheckCodeIntegrityUnsafe()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     return false;
 }
-bool KernelCheatDetector::PerformHeuristicScanUnsafe()
-{
+bool KernelCheatDetector::PerformHeuristicScanUnsafe() {
     __try {
-        MEMORY_BASIC_INFORMATION mbi{};
-        uintptr_t addr = 0x10000;
-
-        while (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
-            if (mbi.State == MEM_COMMIT &&
-                (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
-                mbi.Type == MEM_PRIVATE) {
-                LogFormat("[VEH] SUSPICIOUS EXECUTABLE PRIVATE region @ 0x%llX", reinterpret_cast<uintptr_t>(mbi.BaseAddress));
-                g_detectionAggregator.NotifyDangerousPlayer(0ULL);
-                return true;
-            }
-            addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-            if (addr == 0 || addr > 0x7FFFFFFFFFFFULL) break;
-        }
+        return PerformHeuristicScanImpl(); 
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool KernelCheatDetector::PerformHeuristicScanImpl() {
+    static int privateCount = 0;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    uintptr_t addr = 0x10000;
+
+    while (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_COMMIT &&
+            (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
+            mbi.Type == MEM_PRIVATE) {
+
+            uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            std::string modulePath = GetModulePathSimple(baseAddr); 
+
+            bool isSafe = false;
+            if (IsWhitelistedPrivateRegion(modulePath)) {
+                isSafe = true;
+            }
+            else if (baseAddr > 0x7FF000000000ULL ||
+                mbi.RegionSize < 0x1000 ||
+                mbi.RegionSize > 0x3000000) {
+                isSafe = true;
+            }
+
+            if (!isSafe) {
+                LogFormat("[VEH] SUSPICIOUS EXECUTABLE PRIVATE region @ 0x%llX (size: 0x%llX, module: %s)",
+                    baseAddr, mbi.RegionSize, modulePath.c_str());
+                privateCount++;
+                if (privateCount >= 3) {
+                    privateCount = 0;
+                    g_detectionAggregator.NotifyDangerousPlayer(0ULL);
+                    return true;
+                }
+            }
+        }
+
+        addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (addr == 0 || addr > 0x7FFFFFFFFFFFULL) break;
+    }
+
     return false;
 }
 bool KernelCheatDetector::DetectLoadedKernelDrivers()

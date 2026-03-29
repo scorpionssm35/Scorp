@@ -73,7 +73,6 @@ private:
     std::atomic<uint64_t> m_lastKernelDriverCheck{ 0 };
     std::atomic<uint64_t> m_lastTestSigningCheck{ 0 };
     std::atomic<uint64_t> m_lastDMACheck{ 0 };
-
     bool m_dmaDetected = false;
     bool m_initialized = false;
     bool m_highResTimer = false;
@@ -86,7 +85,7 @@ private:
     void CreateBaselines();                    // ← теперь private
     bool CheckCodeIntegrityUnsafe();
     bool PerformHeuristicScanUnsafe();
-
+    bool PerformHeuristicScanImpl();
     // Новые детекты
     bool DetectLoadedKernelDrivers();
     bool IsTestSigningOrDebugEnabled();

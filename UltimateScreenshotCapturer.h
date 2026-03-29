@@ -31,6 +31,11 @@ private:
     bool m_overlayDebug = false;
     bool m_drawOverlayInfo = true;
 
+    HWND m_bestWindow = nullptr; 
+    int  m_bestArea = 0;         
+
+    static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam);
+
     // НОВЫЕ МЕТОДЫ (добавить после существующих)
     void DrawOverlayOnScreenshot(std::vector<BYTE>& imageData, int width, int height);
     void DrawRectangle(std::vector<BYTE>& imageData, int x, int y, int w, int h,

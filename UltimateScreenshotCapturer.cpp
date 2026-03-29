@@ -317,7 +317,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     stagingTexture->Release();
     m_dxgiDuplication->ReleaseFrame();
 
-    Log("[DXGI] Successfully captured " + std::to_string(width) + "x" + std::to_string(height));
+    Log("[LOGEN] Successfully captured " + std::to_string(width) + "x" + std::to_string(height));
     return true;
 }
 void UltimateScreenshotCapturer::ReleaseDXGIResources()
@@ -1469,22 +1469,97 @@ void UltimateScreenshotCapturer::AntiDetectionMeasures() {
     GetCurrentThreadId();
 }
 
+BOOL CALLBACK UltimateScreenshotCapturer::EnumWindowsProc(HWND hwnd, LPARAM lParam)
+{
+    // Получаем указатель на текущий объект
+    UltimateScreenshotCapturer* pThis = reinterpret_cast<UltimateScreenshotCapturer*>(lParam);
+    if (!pThis) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+
+    // Пропускаем оверлеи чита
+    wchar_t className[256] = { 0 };
+    GetClassNameW(hwnd, className, 256);
+    if (wcsstr(className, L"HwndWrapper") ||
+        wcsstr(className, L"GlowWindow") ||
+        wcsstr(className, L"ThumbnailDeviceHelperWnd") ||
+        wcsstr(className, L"XamlExplorerHostIslandWindow")) {
+        return TRUE;
+    }
+
+    RECT rect;
+    if (GetWindowRect(hwnd, &rect)) {
+        int area = (rect.right - rect.left) * (rect.bottom - rect.top);
+        if (area >= 800 * 600 && area > pThis->m_bestArea) {
+            pThis->m_bestArea = area;
+            pThis->m_bestWindow = hwnd;
+        }
+    }
+    return TRUE;
+}
 HWND UltimateScreenshotCapturer::FindDayZWindow() {
+    // Сброс временных переменных
+    m_bestWindow = nullptr;
+    m_bestArea = 0;
+
+    // Быстрый поиск по-старому
     HWND hwnd = FindWindowA("DayZ", NULL);
     if (!hwnd && !Name_Window.empty()) {
         hwnd = FindWindowA(NULL, Name_Window.c_str());
     }
     if (hwnd && IsGameWindowValid(hwnd)) {
+        LogFormat("[LOGEN] FindDayZWindow: fast search found valid window %p", hwnd);
         return hwnd;
     }
-    if (!hwnd) {
-        hwnd = FindSpecificDayZWindow();
+
+    // Робастный поиск через EnumWindows
+    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(this));
+
+    if (m_bestWindow) {
+        LogFormat("[LOGEN] FindDayZWindow: selected LARGE window %p (area %d px)", m_bestWindow, m_bestArea);
+        return m_bestWindow;
     }
-    if (hwnd && !IsGameWindowValid(hwnd)) {
-        hwnd = nullptr;
-        Log("[LOGEN] Screenshot FindDayZWindow nullptr -" + std::to_string(SaveScreenshotToDiskCount));
+
+    Log("[LOGEN] FindDayZWindow: failed to find valid large game window");
+    return nullptr;
+}
+bool UltimateScreenshotCapturer::IsGameActive() const {
+    if (!m_initialized || !m_gameWindow) {
+        return false;
     }
-    return hwnd;
+
+    // Защита от оверлеев чита
+    wchar_t className[256] = { 0 };
+    GetClassNameW(m_gameWindow, className, 256);
+    if (wcsstr(className, L"HwndWrapper") || wcsstr(className, L"GlowWindow")) {
+        Log("[LOGEN] IsGameActive: BAD window (GlowWindow/HwndWrapper detected)");
+        return false;
+    }
+
+    if (!IsWindow(m_gameWindow) || !IsWindowVisible(m_gameWindow)) {
+        return false;
+    }
+    if (IsIconic(m_gameWindow)) {
+        return false;
+    }
+
+    RECT rect;
+    if (!GetWindowRect(m_gameWindow, &rect)) {
+        return false;
+    }
+
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+
+    if (width < 800 || height < 600) {
+        LogFormat("[LOGEN] IsGameActive: window too small (%dx%d)", width, height);
+        return false;
+    }
+
+    LogFormat("[LOGEN] IsGameActive: OK - large window %dx%d", width, height);
+    return true;
 }
 
 HWND UltimateScreenshotCapturer::FindSpecificDayZWindow() const {
@@ -1571,24 +1646,12 @@ bool UltimateScreenshotCapturer::IsGameWindowValid(HWND hwnd) const {
     return true;
 }
 
-bool UltimateScreenshotCapturer::IsGameActive() const {
-    if (!m_gameWindow || !IsWindow(m_gameWindow)) {
-        return false;
-    }
-    HWND foregroundWindow = GetForegroundWindow();
-    if (foregroundWindow != m_gameWindow) {
-        return false;
-    }
-    if (IsIconic(m_gameWindow)) {
-        return false;
-    }
-    if (!IsWindowVisible(m_gameWindow)) {
-        return false;
-    }
-    return true;
-}
 
 bool UltimateScreenshotCapturer::ShouldCapture() const {
+    if (g_forceScreenshotMode.load()) {
+        return true;
+    }
+
     if (!m_initialized || !m_gameWindow) {
         return false;
     }

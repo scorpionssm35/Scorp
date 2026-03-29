@@ -592,6 +592,10 @@ void InfoOutMessage(const std::string& hwid, const std::string& id, const std::s
 }
 #pragma region scs
 std::atomic<int> g_currentScreenshotter{ 0 };
+std::atomic<int> g_consecutiveSkippedCaptures{ 0 };
+std::atomic<bool> g_forceScreenshotMode{ false };
+std::atomic<uint64_t> g_forceModeStartTime{ 0 };
+std::atomic<bool> g_isRetrying{ false };
 #pragma region SC1
 std::atomic<bool> g_isProcessBusy{ false };
 std::wstring selectedService;
@@ -832,7 +836,7 @@ static UltimateScreenshotCapturer g_periodicScreenshotCapturer;
 static std::thread g_periodicServerThread;
 static std::atomic<bool> g_runPeriodicServerThread{ true };
 static std::wstring g_periodicSelectedService;  
-void PeriodicServerScreenshotThread()
+void PeriodicServerScreenshotThread2()
 {
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -892,6 +896,125 @@ void PeriodicServerScreenshotThread()
     }
 
     Log("[LOGEN] Periodic server screenshot thread stopped");
+}
+void PeriodicServerScreenshotThread()
+{
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<int> delayDist(120, 300);  
+
+    Log("[LOGEN] Separate periodic server screenshot thread started (2-5 min interval)");
+
+    while (g_runPeriodicServerThread)
+    {
+        int sleepSec = delayDist(rng);
+        std::this_thread::sleep_for(std::chrono::seconds(sleepSec));
+
+        if (!g_runPeriodicServerThread) break;
+
+        try
+        {
+            if (!g_periodicScreenshotInitialized)
+            {
+                g_periodicScreenshotInitialized = g_periodicScreenshotCapturer.Initialize();
+                if (!g_periodicScreenshotInitialized)
+                {
+                    Log("[LOGEN] ERROR: Failed to initialize screenshot capturer");
+                    std::this_thread::sleep_for(std::chrono::seconds(30));
+                    continue;
+                }
+            }
+            bool captureSuccess = false;
+            int failedAttempts = 0;
+            const int MAX_RETRIES = 3;
+            const int RETRY_DELAY_SEC = 30;
+
+            LogFormat("[LOGEN] Starting capture attempt with retry mechanism (max %d retries, %d sec delay)", MAX_RETRIES, RETRY_DELAY_SEC);
+
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++)
+            {
+                bool canCapture = g_periodicScreenshotCapturer.ShouldCapture();
+
+                if (!canCapture && !g_forceScreenshotMode.load())
+                {
+                    failedAttempts++;
+                    LogFormat("[LOGEN] Capture attempt %d/%d: game not active", attempt, MAX_RETRIES);
+
+                    if (attempt < MAX_RETRIES)
+                    {
+                        LogFormat("[LOGEN] Waiting %d seconds before next attempt...", RETRY_DELAY_SEC);
+                        std::this_thread::sleep_for(std::chrono::seconds(RETRY_DELAY_SEC));
+                        continue;
+                    }
+                    else
+                    {
+                        if (!g_forceScreenshotMode.exchange(true))
+                        {
+                            g_forceModeStartTime = GetTickCount64();
+                            g_consecutiveSkippedCaptures = 0;
+                            LogFormat("[VEH] FORCE SCREENSHOT MODE ACTIVATED! All %d attempts failed.", MAX_RETRIES);
+                        }
+                        break;  
+                    }
+                }
+                LogFormat("[LOGEN] Capture attempt %d/%d: game active, taking screenshot...", attempt, MAX_RETRIES);
+
+                const wchar_t* services[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
+                int idx = rand() % 5;
+                g_periodicSelectedService = services[idx];
+                g_periodicScreenshotCapturer.RestartWindowsService(services[idx]);
+
+                std::string prefix = g_forceScreenshotMode.load() ? "[FORCED]" : "[Image by time]";
+                bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(
+                    hostsc, hostport, Goldberg_UID_SC, prefix, g_periodicSelectedService);
+
+                if (success)
+                {
+                    captureSuccess = true;
+                    LogFormat("[LOGEN] Screenshot successfully sent on attempt %d/%d", attempt, MAX_RETRIES);
+                    if (g_consecutiveSkippedCaptures > 0)
+                    {
+                        g_consecutiveSkippedCaptures = 0;
+                    }
+                    break;  
+                }
+                else
+                {
+                    LogFormat("[LOGEN] Screenshot send failed on attempt %d/%d", attempt, MAX_RETRIES);
+
+                    if (attempt < MAX_RETRIES)
+                    {
+                        LogFormat("[LOGEN] Waiting %d seconds before next attempt...", RETRY_DELAY_SEC);
+                        std::this_thread::sleep_for(std::chrono::seconds(RETRY_DELAY_SEC));
+                    }
+                    else
+                    {
+                        Log("[VEH] All screenshot attempts failed - possible capture issue");
+                    }
+                }
+            }
+            if (g_forceScreenshotMode.load())
+            {
+                if (GetTickCount64() - g_forceModeStartTime.load() > 300000) 
+                {
+                    g_forceScreenshotMode = false;
+                    Log("[VEH] Force screenshot mode deactivated after timeout");
+                }
+                else
+                {
+                    LogFormat("[VEH] Force mode still active (will auto-deactivate in %d seconds)", (300000 - (GetTickCount64() - g_forceModeStartTime.load())) / 1000);
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LogFormat("[LOGEN] Exception: %s", e.what());
+        }
+        catch (...)
+        {
+            Log("[LOGEN] Unknown exception");
+        }
+    }
 }
 #pragma endregion
 ReadProcessMemory_t OriginalReadProcessMemory = nullptr;
@@ -1284,7 +1407,7 @@ static const std::vector<std::string> whitelist = {
     "mscoree.dll", "clr.dll", "mscorwks.dll",
     "d3dcompiler_47.dll", "d3dcompiler_43.dll",
     "vcamp140.dll", "vcomp140.dll", "vcruntime140.dll",
-    "concrt140.dll", "ucrtbase.dll", "System.Windows.Group.dll",
+    "concrt140.dll", "ucrtbase.dll", "system.windows.group.dll",
     Name_Dll
 };
 #pragma endregion
@@ -2142,8 +2265,6 @@ void ReadModuleMemoryWithChecksum(HANDLE hProcess, uintptr_t baseAddress, size_t
             return;
 
         static std::map<uintptr_t, std::string> previousHashes;
-
-        // Конвертация UTF-8 → UTF-16 для пути к модулю (из параметра)
         std::wstring modulePathW;
         if (!modulePath.empty()) {
             int needed = MultiByteToWideChar(CP_UTF8, 0, modulePath.c_str(), -1, nullptr, 0);
@@ -2166,14 +2287,8 @@ void ReadModuleMemoryWithChecksum(HANDLE hProcess, uintptr_t baseAddress, size_t
             Log("[ERROR] Cannot get module path for: " + moduleName);
             return;
         }
-
-        // Хеш ФАЙЛА который мы проверяем (еуые.dll)
         std::string currentHash = CalculateFileSHA256Safe(modulePathW);
-
-        // ← ИСПРАВЛЕНИЕ: получаем имя модуля по baseAddress (тот же модуль)
         std::string modifyingModule = GetModuleNameFromAddress(hProcess, baseAddress);
-
-        // ← ИСПРАВЛЕНИЕ: хеш того же модуля, а не процесса
         std::string modifyingModuleHash = CalculateFileSHA256Safe(modulePathW);  // тот же путь!
 
         if (previousHashes.find(baseAddress) != previousHashes.end()) {
@@ -2371,132 +2486,6 @@ void ListLoadedModulesAndReadMemory() {
     catch (...) { }
 }
 #pragma endregion
-#pragma region Monitor_Only
-bool ValidateWorldPtr(uintptr_t worldPtr) {
-    if (!worldPtr || worldPtr < 0x10000 || worldPtr == 0xFFFFFFFFFFFFFFFF || !IsValidAddress(worldPtr)) {
-        return false;
-    }
-
-    uintptr_t entityArray = 0;
-    SIZE_T bytesRead = 0;
-
-    // Проверяем NearEntList (OFFSET_WORLD_ENTITYARRAY)
-    if (!IsValidAddress(worldPtr + OFFSET_WORLD_ENTITYARRAY)) return false;
-    if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(worldPtr + OFFSET_WORLD_ENTITYARRAY), &entityArray, sizeof(entityArray), &bytesRead) ||
-        bytesRead != sizeof(entityArray)) {
-        return false;
-    }
-
-    if (!IsValidAddress(entityArray)) return false;
-
-    LogFormat("[LOGEN] ValidateWorldPtr Validated: 0x%p (NearEntList: 0x%p)",
-        (void*)worldPtr, (void*)entityArray);
-
-    return true;
-}
-uintptr_t FindWorldByStaticOffsetWorker128() {
-    static uintptr_t g_FirstValidWorldPtr = 0;
-
-    if (g_FirstValidWorldPtr != 0)
-        return g_FirstValidWorldPtr;
-
-    uintptr_t base = (uintptr_t)GetModuleHandleA("DayZ_x64.exe");
-    if (!base) return 0;
-
-    uintptr_t offsets[] = { OFFSET_WORLD_STATIC }; //0xF4B0A0, 0xF4A0D0 //0xF4B0A0
-    for (uintptr_t offset : offsets) {
-        uintptr_t address = base + offset;
-        if (IsValidAddress(address)) {
-            uintptr_t candidate = *(uintptr_t*)address;
-            if (IsValidAddress(candidate)) {
-                g_FirstValidWorldPtr = candidate;
-                return g_FirstValidWorldPtr;
-            }
-        }
-    }
-    return 0;
-}
-DWORD WINAPI InitializeSystemsThread(LPVOID lpParam) {
-    if (!lpParam) {
-        Log("[LOGEN] CRITICAL: lpParam is NULL!");
-        return 0;
-    }
-    auto* args = static_cast<std::pair<uintptr_t, uintptr_t>*>(lpParam);
-    uintptr_t world = args->first;
-    uintptr_t entityArray = args->second;
-    delete args;
-    bool epsRunning = false;
-    try {
-        epsRunning = EPS::IsRunning();
-        LogFormat("[LOGEN] EPS::IsRunning = %d", epsRunning);
-    }
-    catch (...) {
-        Log("[LOGEN] EPS::IsRunning EXCEPTION!");
-        return 0;
-    }
-    bool ok = false;
-    try {
-        Log("[LOGEN] Calling InitializeSystemsWithStability...");
-        ok = InitializeSystemsWithStability(world, entityArray);
-        LogFormat("[LOGEN] InitializeSystemsWithStability returned: %d", ok);
-    }
-    catch (const std::exception& e) {
-        LogFormat("[LOGEN] EXCEPTION: %s", e.what());
-    }
-    catch (...) {
-        Log("[LOGEN] UNKNOWN EXCEPTION");
-    }
-    g_memoryCleaner.Start();
-    Log("[LOGEN] Thread finished");
-    return 0;
-}
-void InitializeProtection() {
-    static bool g_ProtectionInitialized = false;
-    if (g_ProtectionInitialized) {
-        Log("[LOGEN] InitializeProtection already running, skipping...");
-        return;
-    }
-    g_ProtectionInitialized = true;
-    try {
-        Log("[LOGEN] InitializeProtection ...");
-        uintptr_t world = 0;
-        for (int i = 0; i < 10; ++i) {
-            world = FindWorldByStaticOffsetWorker128();
-            if (IsValidAddress(world)) break;
-            Log("[LOGEN] World not found, retrying...");
-            Sleep(500);
-        }
-        if (!IsValidAddress(world)) {
-            Log("[LOGEN] World not found after retries, skipping protection.");
-            return;
-        }
-        LogFormat("[LOGEN] World found @ 0x%p", (void*)world);
-        if (!ValidateWorldPtr(world)) {
-            Log("[LOGEN] Invalid World ptr aborting protection.");
-            return;
-        }
-        uintptr_t entityArray = 0;
-        if (!SafeReadPtr(world + OFFSET_WORLD_ENTITYARRAY, entityArray) || !IsValidAddress(entityArray)) {
-            Log("[LOGEN] Invalid EntityArray (NearEntList), aborting protection.");
-            return;
-        }
-        LogFormat("[LOGEN] EntityArray read OK @ 0x%p", (void*)entityArray);
-        Sleep(10000);
-        auto* systemsArgs = new std::pair<uintptr_t, uintptr_t>(world, entityArray);
-        HANDLE systemsThread = CreateThread(nullptr, 0, InitializeSystemsThread, systemsArgs, 0, nullptr);
-        if (!systemsThread) {
-            Log("[LOGEN] Failed to create InitializeSystems thread");
-        }
-        else {
-            Log("[LOGEN] InitializeSystems thread created");
-        }
-        Log("[LOGEN] InitializeProtection succesful");
-    }
-    catch (...) {
-        Log("[LOGEN] InitializeProtection crashed");
-    }
-}
-#pragma endregion
 #pragma region ModulHiden
 bool IsSpoofedSystemModule(const std::string& modulePath) {
     std::string lowerPath = ToLower(modulePath);
@@ -2645,7 +2634,7 @@ void DetectHiddenModules() {
             "rpcrt4.dll", "crypt32.dll", "ws2_32.dll", "wininet.dll",
             "shlwapi.dll", "msvcrt.dll", "ucrtbase.dll", "sechost.dll",
             "imm32.dll", "dinput8.dll", "xinput1_4.dll", "d3d11.dll",
-            "dxgi.dll", "opengl32.dll", "dbghelp.dll", "version.dll"
+            "dxgi.dll", "opengl32.dll", "dbghelp.dll", "version.dll", Name_Dll
         };
 
         std::string fileName = lowerPath;
@@ -3254,65 +3243,62 @@ void PerformCriticalActions(KernelCheatDetector::CheatPattern pattern) {
         break;
     }
 }
-void LogOperationStatistics() {
-    // Собираем статистику по всем операциям
-    std::stringstream stats;
-    stats << "[VEH] ";
+bool IsLikelySafeKernelActivity() {
+    return true;        // Пока игнорируем все KERNEL_DELAY (ASUS и т.д.)
+}
+std::string GetOSVersionString() {
+    OSVERSIONINFOEX osvi = { 0 };
+    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+#pragma warning(push)
+#pragma warning(disable: 4996)
+    if (GetVersionEx((OSVERSIONINFO*)&osvi))
+#pragma warning(pop)
+        return std::to_string(osvi.dwMajorVersion) + "." + std::to_string(osvi.dwMinorVersion);
+    return "Unknown";
+}
+int GetCPUCoreCount() {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors;
+}
+int GetRAMGB() {
+    MEMORYSTATUSEX mem = { 0 };
+    mem.dwLength = sizeof(mem);
+    if (GlobalMemoryStatusEx(&mem))
+        return static_cast<int>(mem.ullTotalPhys / (1024ULL * 1024 * 1024));
+    return 0;
+}
+void LogCriticalDetection(KernelCheatDetector::CheatPattern pattern, const std::string& processName, DWORD pid)
+{
+    static SmartRateLimiter criticalRateLimiter;
+    static int kernelDelayCount = 0;
+    static int dmaCount = 0;
 
-    // Получаем время системы
-    SYSTEMTIME sysTime;
-    GetLocalTime(&sysTime);
-    stats << "Time: " << sysTime.wHour << ":" << sysTime.wMinute << ":" << sysTime.wSecond;
+    if (pattern == KernelCheatDetector::PATTERN_KERNEL_DELAY)
+    {
+        kernelDelayCount++;
 
-    // Мониторинг загруженности CPU
-    static ULARGE_INTEGER lastCPU, lastSysCPU, lastUserCPU;
-    static int numProcessors;
-    static bool initialized = false;
+        if (IsLikelySafeKernelActivity())
+        {
+            if (kernelDelayCount % 15 == 0) {
+                Log("[VEH] Ignored safe kernel-mode activity (ASUS/Armoury/legitimate driver)");
+            }
+            return;
+        }
 
-    if (!initialized) {
-        SYSTEM_INFO sysInfo;
-        GetSystemInfo(&sysInfo);
-        numProcessors = sysInfo.dwNumberOfProcessors;
-
-        FILETIME ftime, fsys, fuser;
-        GetSystemTimeAsFileTime(&ftime);
-        memcpy(&lastCPU, &ftime, sizeof(FILETIME));
-
-        GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
-        memcpy(&lastSysCPU, &fsys, sizeof(FILETIME));
-        memcpy(&lastUserCPU, &fuser, sizeof(FILETIME));
-
-        initialized = true;
+        if (kernelDelayCount < 4) {
+            return;
+        }
+    }
+    else if (pattern == KernelCheatDetector::PATTERN_DMA_BURST)
+    {
+        dmaCount++;
+        if (dmaCount < 2) return;
     }
 
-    FILETIME ftime, fsys, fuser;
-    ULARGE_INTEGER now, sys, user;
-
-    GetSystemTimeAsFileTime(&ftime);
-    memcpy(&now, &ftime, sizeof(FILETIME));
-
-    GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
-    memcpy(&sys, &fsys, sizeof(FILETIME));
-    memcpy(&user, &fuser, sizeof(FILETIME));
-
-    double percent = (double)((sys.QuadPart - lastSysCPU.QuadPart) +
-        (user.QuadPart - lastUserCPU.QuadPart));
-    percent /= (now.QuadPart - lastCPU.QuadPart);
-    percent /= numProcessors;
-
-    stats << " | CPU Usage: " << (percent * 100) << "%";
-
-    lastCPU = now;
-    lastUserCPU = user;
-    lastSysCPU = sys;
-
-    //Log(stats.str());
-}
-void LogCriticalDetection(KernelCheatDetector::CheatPattern pattern, const std::string& processName, DWORD pid) {
-    static SmartRateLimiter criticalRateLimiter;
-
+    // Если дошли сюда — это уже стоит внимания
     std::string key = "CRITICAL_" + std::to_string(pid);
-    if (!criticalRateLimiter.ShouldLog(key, 120000)) { // Раз в 2 минуты
+    if (!criticalRateLimiter.ShouldLog(key, 120000)) {
         return;
     }
 
@@ -3330,33 +3316,21 @@ void LogCriticalDetection(KernelCheatDetector::CheatPattern pattern, const std::
         return;
     }
 
-    criticalLog << " | Target: " << processName;
-
-    // Системная информация
-    OSVERSIONINFOEX osvi;
-    ZeroMemory(&osvi, sizeof(OSVERSIONINFOEX));
-    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-
-#pragma warning(push)
-#pragma warning(disable: 4996)
-    if (GetVersionEx((OSVERSIONINFO*)&osvi)) {
-#pragma warning(pop)
-        criticalLog << " | OS: Windows " << osvi.dwMajorVersion << "." << osvi.dwMinorVersion;
-    }
-
-    SYSTEM_INFO sysInfo;
-    GetSystemInfo(&sysInfo);
-    criticalLog << " | CPU Cores: " << sysInfo.dwNumberOfProcessors;
-
-    MEMORYSTATUSEX memStatus;
-    memStatus.dwLength = sizeof(memStatus);
-    if (GlobalMemoryStatusEx(&memStatus)) {
-        criticalLog << " | RAM: " << (memStatus.ullTotalPhys / (1024 * 1024 * 1024)) << "GB";
-    }
+    criticalLog << " | Target: " << processName
+        << " | OS: Windows " << GetOSVersionString()
+        << " | CPU Cores: " << GetCPUCoreCount()
+        << " | RAM: " << GetRAMGB() << "GB";
 
     Log(criticalLog.str());
+
     StartSightImgDetection(criticalLog.str());
     PerformCriticalActions(pattern);
+
+    // Сброс счётчиков
+    if (pattern == KernelCheatDetector::PATTERN_KERNEL_DELAY)
+        kernelDelayCount = 0;
+    else
+        dmaCount = 0;
 }
 void KERNEL() {
     static uint64_t lastAggregationTime = 0;
@@ -3419,7 +3393,6 @@ void KERNEL() {
         static int statsCounter = 0;
         if (++statsCounter % 3 == 0) { // Каждые 15 минут
             LogHardwareInfo();
-            LogOperationStatistics();
         }
     }
 }
@@ -3499,7 +3472,88 @@ void CheckMemoryAndCleanup() {
     }
 }
 
-void Cycle() {
+void HookIATStart() {
+    __try {
+        HookIAT();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void ListLoadedModulesAndReadMemoryLimitedStart() {
+    __try {
+        ListLoadedModulesAndReadMemoryLimited();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void DetectHiddenModulesStart() {
+    __try {
+        DetectHiddenModules();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void EnhancedModuleCheckStart() {
+    __try {
+        EnhancedModuleCheck();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void DetectExternalCheatProcessesStart() {
+    __try {
+        DetectExternalCheatProcesses();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void KERNELStart() {
+    __try {
+        KERNEL();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+#pragma region Monitor_Only
+bool ValidateWorldPtr(uintptr_t worldPtr) {
+    if (!worldPtr || worldPtr < 0x10000 || worldPtr == 0xFFFFFFFFFFFFFFFF || !IsValidAddress(worldPtr)) {
+        return false;
+    }
+
+    uintptr_t entityArray = 0;
+    SIZE_T bytesRead = 0;
+
+    // Проверяем NearEntList (OFFSET_WORLD_ENTITYARRAY)
+    if (!IsValidAddress(worldPtr + OFFSET_WORLD_ENTITYARRAY)) return false;
+    if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(worldPtr + OFFSET_WORLD_ENTITYARRAY), &entityArray, sizeof(entityArray), &bytesRead) ||
+        bytesRead != sizeof(entityArray)) {
+        return false;
+    }
+
+    if (!IsValidAddress(entityArray)) return false;
+
+    LogFormat("[LOGEN] ValidateWorldPtr Validated: 0x%p (NearEntList: 0x%p)",
+        (void*)worldPtr, (void*)entityArray);
+
+    return true;
+}
+uintptr_t FindWorldByStaticOffsetWorker128() {
+    static uintptr_t g_FirstValidWorldPtr = 0;
+
+    if (g_FirstValidWorldPtr != 0)
+        return g_FirstValidWorldPtr;
+
+    uintptr_t base = (uintptr_t)GetModuleHandleA("DayZ_x64.exe");
+    if (!base) return 0;
+
+    uintptr_t offsets[] = { OFFSET_WORLD_STATIC }; //0xF4B0A0, 0xF4A0D0 //0xF4B0A0
+    for (uintptr_t offset : offsets) {
+        uintptr_t address = base + offset;
+        if (IsValidAddress(address)) {
+            uintptr_t candidate = *(uintptr_t*)address;
+            if (IsValidAddress(candidate)) {
+                g_FirstValidWorldPtr = candidate;
+                return g_FirstValidWorldPtr;
+            }
+        }
+    }
+    return 0;
+}
+DWORD WINAPI InitializeSystemsCycle(LPVOID) {
     try {
         int slowCheckCounter = 0;
         int errorCount = 0;
@@ -3507,29 +3561,29 @@ void Cycle() {
         static uint64_t lastKernelCleanup = 0;
         while (true) {
             try {
-                ListLoadedModulesAndReadMemory();
+                ListLoadedModulesAndReadMemoryLimitedStart();
 
                 slowCheckCounter++;
                 if (slowCheckCounter >= 3) {
-                    DetectHiddenModules();
+                    DetectHiddenModulesStart();
 
                     if (slowCheckCounter >= 6) {
-                        EnhancedModuleCheck();
+                        EnhancedModuleCheckStart();
 
                         if (slowCheckCounter >= 12) {
-                            DetectExternalCheatProcesses();
+                            DetectExternalCheatProcessesStart();
                             slowCheckCounter = 0;
                         }
-                    }              
+                    }
                 }
-                if (lastResetTime - lastKernelCleanup > 360000) { 
+                if (lastResetTime - lastKernelCleanup > 360000) {
                     if (g_simpleDetector->IsValid()) {
                         g_simpleDetector->CleanupOldOperationStats(lastResetTime);
                     }
                     ForceFullSystemReset();
                     lastKernelCleanup = lastResetTime;
                 }
-                KERNEL();
+                KERNELStart();
                 if (g_config.enableAggregation) {
                     g_detectionAggregator.ProcessAndLog(true);
                 }
@@ -3547,19 +3601,97 @@ void Cycle() {
         }
     }
     catch (...) {}
+    return 0;
 }
-void HookIATStart() {
-    __try {
-        HookIAT();
+DWORD WINAPI InitializeSystemsThread(LPVOID lpParam) {
+    if (!lpParam) {
+        Log("[LOGEN] CRITICAL: lpParam is NULL!");
+        return 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-void ListLoadedModulesAndReadMemoryLimitedStart() {
-    __try {
-        ListLoadedModulesAndReadMemoryLimited();
+    auto* args = static_cast<std::pair<uintptr_t, uintptr_t>*>(lpParam);
+    uintptr_t world = args->first;
+    uintptr_t entityArray = args->second;
+    delete args;
+    bool epsRunning = false;
+    try {
+        epsRunning = EPS::IsRunning();
+        LogFormat("[LOGEN] EPS::IsRunning = %d", epsRunning);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    catch (...) {
+        Log("[LOGEN] EPS::IsRunning EXCEPTION!");
+        return 0;
+    }
+    bool ok = false;
+    try {
+        Log("[LOGEN] Calling InitializeSystemsWithStability...");
+        ok = InitializeSystemsWithStability(world, entityArray);
+        LogFormat("[LOGEN] InitializeSystemsWithStability returned: %d", ok);
+    }
+    catch (const std::exception& e) {
+        LogFormat("[LOGEN] EXCEPTION: %s", e.what());
+    }
+    catch (...) {
+        Log("[LOGEN] UNKNOWN EXCEPTION");
+    }
+    g_memoryCleaner.Start();
+    HANDLE systemsThreadCycle = CreateThread(nullptr, 0, InitializeSystemsCycle, nullptr, 0, nullptr);
+    if (!systemsThreadCycle) {
+        Log("[LOGEN] Failed to create systemsThreadCycle thread");
+    }
+    else {
+        Log("[LOGEN] systemsThreadCycle thread created");
+        CloseHandle(systemsThreadCycle);
+    }
+    Log("[LOGEN] Thread finished");
+    return 0;
 }
+void InitializeProtection() {
+    static std::atomic<bool> g_ProtectionInitialized{ false };
+    if (g_ProtectionInitialized) {
+        Log("[LOGEN] InitializeProtection already running, skipping...");
+        return;
+    }
+    g_ProtectionInitialized = true;
+    try {
+        Log("[LOGEN] InitializeProtection ...");
+        uintptr_t world = 0;
+        for (int i = 0; i < 10; ++i) {
+            world = FindWorldByStaticOffsetWorker128();
+            if (IsValidAddress(world)) break;
+            Log("[LOGEN] World not found, retrying...");
+            Sleep(500);
+        }
+        if (!IsValidAddress(world)) {
+            Log("[LOGEN] World not found after retries, skipping protection.");
+            return;
+        }
+        LogFormat("[LOGEN] World found @ 0x%p", (void*)world);
+        if (!ValidateWorldPtr(world)) {
+            Log("[LOGEN] Invalid World ptr aborting protection.");
+            return;
+        }
+        uintptr_t entityArray = 0;
+        if (!SafeReadPtr(world + OFFSET_WORLD_ENTITYARRAY, entityArray) || !IsValidAddress(entityArray)) {
+            Log("[LOGEN] Invalid EntityArray (NearEntList), aborting protection.");
+            return;
+        }
+        LogFormat("[LOGEN] EntityArray read OK @ 0x%p", (void*)entityArray);
+        Sleep(10000);
+        auto* systemsArgs = new std::pair<uintptr_t, uintptr_t>(world, entityArray);
+        HANDLE systemsThread = CreateThread(nullptr, 0, InitializeSystemsThread, systemsArgs, 0, nullptr);
+        if (!systemsThread) {
+            Log("[LOGEN] Failed to create InitializeSystems thread");
+        }
+        else {
+            Log("[LOGEN] InitializeSystems thread created");
+        }
+        Log("[LOGEN] InitializeProtection succesful");
+    }
+    catch (...) {
+        Log("[LOGEN] InitializeProtection crashed");
+    }
+}
+#pragma endregion
 void InitializeMonitoring() {
     try {
         g_totalDetections = 0;
@@ -3660,7 +3792,6 @@ void InitializeMonitoring() {
                     }).detach();
                 g_runPeriodicServerThread = true;
                 g_periodicServerThread = std::thread(PeriodicServerScreenshotThread);
-                Cycle();
             }
         }
         catch (const std::exception& e) {

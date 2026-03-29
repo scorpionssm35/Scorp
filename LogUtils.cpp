@@ -684,20 +684,28 @@ void LogTXT(const std::string& message) {
         }
         std::string processedMessage = message;
         for (char drive = 'A'; drive <= 'Z'; ++drive) {
-            std::string drivePrefix = std::string(1, drive) + ":\\";
-            size_t pos = processedMessage.find(drivePrefix);
+            std::string upperDrivePrefix = std::string(1, drive) + ":\\";
+            std::string lowerDrivePrefix = std::string(1, tolower(drive)) + ":\\";
+            size_t pos = processedMessage.find(upperDrivePrefix);
             while (pos != std::string::npos) {
                 processedMessage.replace(pos, 3, "");
-                pos = processedMessage.find(drivePrefix, pos);
+                pos = processedMessage.find(upperDrivePrefix, pos);
+            }
+
+            // Удаляем строчный вариант
+            pos = processedMessage.find(lowerDrivePrefix);
+            while (pos != std::string::npos) {
+                processedMessage.replace(pos, 3, "");
+                pos = processedMessage.find(lowerDrivePrefix, pos);
             }
         }
+
         std::string uidPrefix = VerSVG + "[Goldberg-" + Goldberg_UID_SC + "] ";
         std::string fullMessage = uidPrefix + processedMessage;
         LogTest(fullMessage);
         InfoOutMessage(hwid, Goldberg_UID_SC, processedMessage);
     }
     catch (...) {
-        // Silent fail
     }
 }
 void LogAdd(const std::string& message)
