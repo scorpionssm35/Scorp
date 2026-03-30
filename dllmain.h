@@ -33,3 +33,4 @@ typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE
 extern std::atomic<int> g_consecutiveSkippedCaptures;
 extern std::atomic<bool> g_forceScreenshotMode;
 extern std::atomic<uint64_t> g_forceModeStartTime;
+std::wstring GetFullModulePathFromAddress(uintptr_t addr);

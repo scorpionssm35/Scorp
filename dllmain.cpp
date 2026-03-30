@@ -64,6 +64,7 @@
 #include "BehaviorDetector.h"
 #include "MemoryCleaner.h"
 #include <random>
+#include "Manager.h"
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
@@ -335,6 +336,29 @@ std::string GetInjectedProcessName() {
         }
     }
     return "";
+}
+std::wstring GetFullModulePathFromAddress(uintptr_t addr)
+{
+    if (addr == 0) return L"NULL";
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)))
+        return L"VirtualQuery_FAILED";
+
+    wchar_t path[MAX_PATH] = {};
+
+    if (GetMappedFileNameW(GetCurrentProcess(), mbi.BaseAddress, path, MAX_PATH))
+        return path;
+
+    HMODULE hMod = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCWSTR)addr, &hMod) && hMod)
+    {
+        if (GetModuleFileNameW(hMod, path, MAX_PATH))
+            return path;
+    }
+
+    return L"UNKNOWN";
 }
 
 std::atomic<bool> g_isProcessBusyServer{ false };
@@ -2386,6 +2410,11 @@ void ListLoadedModulesAndReadMemoryLimited() {
                     std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
                     if (isSuspicious || usesMemoryFunctions) {
                         if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
+
+                            if (Manager::GetInstance().IsWhitelistedDLL(lowerModulePath, fileHash)) {
+                                continue;
+                            }
+
                             if (isSuspicious && usesMemoryFunctions) {
                                 Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
@@ -2460,6 +2489,10 @@ void ListLoadedModulesAndReadMemory() {
 
                     if (isSuspicious || usesMemoryFunctions) {
                         if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
+                         
+                            if (Manager::GetInstance().IsWhitelistedDLL(lowerModulePath, fileHash)) {
+                                continue;
+                            }
 
                             if (isSuspicious && usesMemoryFunctions) {
                                 Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
@@ -3441,13 +3474,13 @@ void CheckMemoryAndCleanup() {
 
         static SIZE_T lastMemoryMB = 0;
         static int cleanupCount = 0;
-        if (memoryMB > 7000) {
+        if (memoryMB > 8000) {
             LogFormat("[LOGEN] WARNING: Memory at %zu MB", memoryMB);
-            if (memoryMB > 8000) {
+            if (memoryMB > 9000) {
                 LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
                 ForceFullSystemReset();
                 cleanupCount++;
-                if (cleanupCount > 3 && memoryMB > 9000) {
+                if (cleanupCount > 3 && memoryMB > 11000) {
                     LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
 
                     // Экстренные меры
@@ -3708,6 +3741,7 @@ void InitializeMonitoring() {
         else {
             ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
         }
+        Manager::GetInstance().Initialize();
         Sleep(1500);
         HWID();
         Sleep(1500);

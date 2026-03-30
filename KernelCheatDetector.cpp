@@ -4,6 +4,7 @@
 #include <Psapi.h>
 #include <algorithm>
 #include "DetectionAggregator.h"
+#include "Manager.h"
 
 #pragma comment(lib, "Psapi.lib")
 std::string GetModulePathSimple(uintptr_t address) {
@@ -132,10 +133,13 @@ bool KernelCheatDetector::PerformHeuristicScanImpl() {
                 mbi.RegionSize > 0x3000000) {
                 isSafe = true;
             }
-
+            std::wstring modulePathModule = GetFullModulePathFromAddress(baseAddr);
+            if (Manager::GetInstance().ShouldIgnorePrivateRegion(modulePathModule))
+            {
+                return false;
+            }
             if (!isSafe) {
-                LogFormat("[VEH] SUSPICIOUS EXECUTABLE PRIVATE region @ 0x%llX (size: 0x%llX, module: %s)",
-                    baseAddr, mbi.RegionSize, modulePath.c_str());
+                LogFormat("[VEH] SUSPICIOUS EXECUTABLE PRIVATE region @ 0x%llX (size: 0x%llX, module: %s)", baseAddr, mbi.RegionSize, modulePath.c_str());
                 privateCount++;
                 if (privateCount >= 3) {
                     privateCount = 0;
