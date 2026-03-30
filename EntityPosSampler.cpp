@@ -660,8 +660,8 @@ std::vector<EPS::SimpleEntity> EPS::CollectNowWithEntityList() {
 }
 static DWORD WINAPI EPS_ThreadMain_NoSEH(LPVOID) {
     static int totalRestarts = 0;
-    const int MAX_RESTARTS = 5;
-    const auto RESTART_DELAY = std::chrono::seconds(2);
+    const int MAX_RESTARTS = 3; 
+    const auto RESTART_DELAY = std::chrono::seconds(5); 
 
     auto lastRestartTime = std::chrono::steady_clock::now();
 
@@ -709,7 +709,7 @@ static DWORD WINAPI EPS_ThreadMain_NoSEH(LPVOID) {
                     lastRestartTime = now;
 
                     if (totalRestarts == 1) {
-                        EPS::PerformEntitySamplingRecovery(currentArray);
+                        EPS::CleanupMemory(false);
                     }
                     else if (totalRestarts == 2) {
                         uintptr_t newOffset = AutoDetectPosOffset(currentArray);
@@ -717,20 +717,11 @@ static DWORD WINAPI EPS_ThreadMain_NoSEH(LPVOID) {
                             g_posOffset.store(newOffset);
                         }
                     }
-                    else if (totalRestarts >= 3) {
-                        EPS::Stop();
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-                        if (EPS::Start(currentArray)) {
-                            totalRestarts = 0;
-                        }
+                    else if (totalRestarts >= MAX_RESTARTS) {
+                        Log("[LOGEN] EPS: Critical failure, cleaning data only");
+                        EPS::CleanupMemory(false);
+                        totalRestarts = MAX_RESTARTS - 1;
                     }
-
-                    continue;
-                }
-                else if (totalRestarts >= MAX_RESTARTS) {
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
-                    totalRestarts = MAX_RESTARTS - 1;
                     continue;
                 }
             }
@@ -1356,36 +1347,34 @@ std::vector<uintptr_t> EPS::GetStaticObjects(uintptr_t world) {
    // Log("[STATIC] === FINAL STATIC OBJECTS STATISTICS ===");
     return result;
 }
-// === НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛНОЙ ОЧИСТКИ EPS ===
+
 void EPS::CleanupMemory(bool fullReset)
 {
     Log("[LOGEN] EPS::CleanupMemory Start");
 
-    // 1. Главный снапшот
-    {
-        std::lock_guard<std::mutex> lock(g_snapshotMutex);
-        g_lastSnapshot.clear();
-        g_lastSnapshot.shrink_to_fit();           // ← важно!
-    }
-
-    // 2. Сброс оффсетов и кэшей
-    g_posOffset.store(0);
-    g_worldSizeLocked.store(false);
-    g_worldSizeGuessed.store(false);
-
-    // 4. Полный сброс (только если fullReset == true)
     if (fullReset) {
-        g_epsEntityArray.store(0);
-        g_lastSnapshot.clear();
-        g_lastSnapshot.shrink_to_fit();
-
-        // Перезапускаем поток если нужно
-        if (g_epsRun.load()) {
-            EPS::Stop();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            // можно перезапустить позже
+        {
+            std::lock_guard<std::mutex> lock(g_snapshotMutex);
+            g_lastSnapshot.clear();
+            g_lastSnapshot.shrink_to_fit();
+        }
+        g_posOffset.store(0);
+        uintptr_t currentArray = g_epsEntityArray.load();
+        if (currentArray && IsValidAddress(currentArray)) {
+            uintptr_t newOffset = AutoDetectPosOffset(currentArray);
+            if (newOffset) {
+                g_posOffset.store(newOffset);
+            }
         }
     }
+    else {
+        std::lock_guard<std::mutex> lock(g_snapshotMutex);
+        if (g_lastSnapshot.size() > 500) {
+            g_lastSnapshot.erase(g_lastSnapshot.begin(),
+                g_lastSnapshot.begin() + (g_lastSnapshot.size() - 500));
+        }
+        g_lastSnapshot.shrink_to_fit();
+    }
 
-    Log("[LOGEN] EPS::CleanupMemory — End");
+    LogFormat("[LOGEN] EPS::CleanupMemory — End, snapshot size: %zu", g_lastSnapshot.size());
 }

@@ -993,10 +993,10 @@ void BD_ApplySmartReset() {
         g_suspicionMetrics.speedhackScore = std::min(g_suspicionMetrics.speedhackScore, (double)20.0);
     }
 
-    // 2. ОЧИСТКА LOG COOLDOWNS (УМЕНЬШЕНО: было 10 мин, стало 5 мин)
-    if (currentTime - lastLogCooldownCleanup > 300000) { // 5 минут
+    // 2. ОЧИСТКА LOG COOLDOWNS (10)
+    if (currentTime - lastLogCooldownCleanup > 600000) { // 10 минут
         lastLogCooldownCleanup = currentTime;
-        uint64_t cutoff = currentTime - 300000; // Удаляем записи старше 5 минут
+        uint64_t cutoff = currentTime - 600000; // Удаляем записи старше 10 минут
 
         size_t beforeSize = g_logCooldowns.size();
         for (auto it = g_logCooldowns.begin(); it != g_logCooldowns.end(); ) {
@@ -1014,14 +1014,14 @@ void BD_ApplySmartReset() {
     if (g_suspicionMetrics.espScore > 80.0f ||
         g_suspicionMetrics.aimbotScore > 50.0f ||
         g_suspicionMetrics.totalFlags > 100) {
-
+        g_detectionAggregator.NotifyDangerousPlayer(0ULL);
         g_suspicionMetrics = BDSuspicionMetrics{};
         lastSmartReset = currentTime;
         return;
     }
 
-    // 4. ПЛАНОВЫЙ СБРОС (УМЕНЬШЕНО: было 3 мин, стало 2 мин)
-    if (currentTime - lastSmartReset > 120000) { // 2 минуты
+    // 4. ПЛАНОВЫЙ СБРОС (5)
+    if (currentTime - lastSmartReset > 300000) { // 5 минуты
         g_suspicionMetrics = BDSuspicionMetrics{};
         g_trackedTargets.clear();
         g_activeBullets.clear();

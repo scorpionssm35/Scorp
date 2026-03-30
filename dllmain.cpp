@@ -1,70 +1,77 @@
-﻿#include <windows.h>
+﻿#define WIN32_LEAN_AND_MEAN
+#define _WINSOCK_DEPRECATED_NO_WARNINGS 
+#include <windows.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <shlobj.h>
+#include <intrin.h>
+#include <wincrypt.h>
 #include <dbghelp.h>
-#include <Psapi.h>
 #include <winternl.h>
-#include <ntstatus.h> 
-#include <iostream>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
-#include <tlhelp32.h>
 #include <algorithm>
 #include <cctype>
-#include <iomanip>
 #include <map>
-#include <shlobj.h>
-#include <intrin.h>
-#include <locale>
-#include <codecvt>
 #include <mutex>
 #include <regex>
 #include <memory>
-#include <wintrust.h> 
-#include <softpub.h> 
-#include <wincrypt.h> 
-#include <future>
-#include <unordered_set>
-#include <cstdarg>
 #include <set>
 #include <chrono>
-#ifndef STATUS_INFO_LENGTH_MISMATCH
-#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
-#endif
+#include <random>
+#include <unordered_map>
+
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "Dbghelp.lib")
 #pragma comment(lib, "Psapi.lib")
 #pragma comment(lib, "Advapi32.lib")
-#define IMAGE_DIRECTORY_ENTRY_IMPORT 1
-#include "LogUtils.h"
-#include <lm.h>
-#include <sddl.h>
+#pragma comment(lib, "Crypt32.lib")
+#pragma comment(lib, "Version.lib")
 #pragma comment(lib, "Netapi32.lib")
-#include "KernelCheatDetector.h" 
+
+#define IMAGE_DIRECTORY_ENTRY_IMPORT 1
+
+#include "LogUtils.h"
+#include "KernelCheatDetector.h"
 #include "UltimateScreenshotCapturer.h"
 #include "DetectionAggregator.h"
 #include "KeyToggleMonitor.h"
 #include "dllmain.h"
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#pragma comment(lib, "Crypt32.lib")
-#pragma comment(lib, "Version.lib")
-#include <cstdio>
-#include <cstring>
-#include <cstdint>
-#include <unordered_map>
 #include "SystemInitializer.h"
 #include "EntityPosSampler.h"
 #include "VulkanDetector.h"
 #include "BehaviorDetector.h"
 #include "MemoryCleaner.h"
-#include <random>
-#include "Manager.h"
+
+#ifndef STATUS_INFO_LENGTH_MISMATCH
+#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
+#endif
+#include <WinSock2.h>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <sddl.h>
+#include <lmcons.h>
+#include <LMaccess.h>
+#include <lmerr.h>
+#include <LMAPIbuf.h>
+
+#ifndef _SOCKLEN_T
+#define _SOCKLEN_T
+typedef int socklen_t;
+#endif
 /*
 * ВАЖНО ДОБАВЬ ИМЯ КЛИЕНТА в IsLegitimateModule
 [WARNING MonitorSuspiciousFunctions] // отключил
@@ -78,10 +85,6 @@
 [VEH]
 [LOGEN]
 */
-#ifndef _SOCKLEN_T
-#define _SOCKLEN_T
-typedef int socklen_t;
-#endif
 std::string VerSVG = "1.1.6.6";
 bool GameProjectdayzzona = false;
 
@@ -336,29 +339,6 @@ std::string GetInjectedProcessName() {
         }
     }
     return "";
-}
-std::wstring GetFullModulePathFromAddress(uintptr_t addr)
-{
-    if (addr == 0) return L"NULL";
-
-    MEMORY_BASIC_INFORMATION mbi = {};
-    if (!VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)))
-        return L"VirtualQuery_FAILED";
-
-    wchar_t path[MAX_PATH] = {};
-
-    if (GetMappedFileNameW(GetCurrentProcess(), mbi.BaseAddress, path, MAX_PATH))
-        return path;
-
-    HMODULE hMod = nullptr;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        (LPCWSTR)addr, &hMod) && hMod)
-    {
-        if (GetModuleFileNameW(hMod, path, MAX_PATH))
-            return path;
-    }
-
-    return L"UNKNOWN";
 }
 
 std::atomic<bool> g_isProcessBusyServer{ false };
@@ -860,67 +840,6 @@ static UltimateScreenshotCapturer g_periodicScreenshotCapturer;
 static std::thread g_periodicServerThread;
 static std::atomic<bool> g_runPeriodicServerThread{ true };
 static std::wstring g_periodicSelectedService;  
-void PeriodicServerScreenshotThread2()
-{
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> delayDist(120, 300); 
-
-    Log("[LOGEN] Separate periodic server screenshot thread started (10-20 min)");
-
-    while (g_runPeriodicServerThread)
-    {
-        int sleepSec = delayDist(rng);
-        std::this_thread::sleep_for(std::chrono::seconds(sleepSec));
-
-        if (!g_runPeriodicServerThread) break;
-
-        try
-        {
-            // Инициализация один раз
-            if (!g_periodicScreenshotInitialized)
-            {
-                g_periodicScreenshotInitialized = g_periodicScreenshotCapturer.Initialize();
-                if (!g_periodicScreenshotInitialized)
-                {
-                    Log("[LOGEN] ERROR: Failed to initialize separate screenshot capturer");
-                    std::this_thread::sleep_for(std::chrono::seconds(30));
-                    continue;
-                }
-            }
-
-            if (!g_periodicScreenshotCapturer.ShouldCapture())
-            {
-                Log("[LOGEN] Skipped - game not active");
-                continue;
-            }
-            const wchar_t* services[] = { L"UsoSvc", L"BITS", L"W32Time", L"Wcmsvc", L"Themes" };
-            int idx = rand() % 5;
-            g_periodicSelectedService = services[idx];
-            g_periodicScreenshotCapturer.RestartWindowsService(services[idx]);
-            bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, "[Image by time]", g_periodicSelectedService);
-
-            if (success)
-            {
-                Log("[LOGEN] Screenshot successfully sent to server (periodic)");
-            }
-            else
-            {
-                Log("[LOGEN] Failed to send periodic screenshot to server");
-            }
-        }
-        catch (const std::exception& e)
-        {
-            LogFormat("[LOGEN] Exception: %s", e.what());
-        }
-        catch (...)
-        {
-            Log("[LOGEN] Unknown exception");
-        }
-    }
-
-    Log("[LOGEN] Periodic server screenshot thread stopped");
-}
 void PeriodicServerScreenshotThread()
 {
     std::random_device rd;
@@ -988,9 +907,9 @@ void PeriodicServerScreenshotThread()
                 g_periodicSelectedService = services[idx];
                 g_periodicScreenshotCapturer.RestartWindowsService(services[idx]);
 
-                std::string prefix = g_forceScreenshotMode.load() ? "[FORCED]" : "[Image by time]";
-                bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(
-                    hostsc, hostport, Goldberg_UID_SC, prefix, g_periodicSelectedService);
+                std::string prefix = g_forceScreenshotMode.load() ? "FORCED[Image by time]" : "[Image by time]";
+                LogFormat("[LOGEN] Capture hostsc %d/%d: hostport...", hostsc, hostport);
+                bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, prefix, g_periodicSelectedService);
 
                 if (success)
                 {
@@ -2369,18 +2288,18 @@ void ListLoadedModulesAndReadMemoryLimited() {
             hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, processId);
             if (!hProcess || hProcess == INVALID_HANDLE_VALUE) {
                 Log("[LOGEN] Cannot open process, skipping attempt " + std::to_string(attempt));
-                continue;
+                return;
             }
 
             std::string processName = GetProcessName(hProcess);
             if (ToLower(processName) != Name_Game) {
-                continue;
+                return;
             }
             hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
             if (hModuleSnap == INVALID_HANDLE_VALUE) {
                 Log("[LOGEN] Cannot create module snapshot, skipping attempt " + std::to_string(attempt));
                 if (hProcess) CloseHandle(hProcess);
-                continue;
+                return;
             }
 
             MODULEENTRY32 me32;
@@ -2394,7 +2313,7 @@ void ListLoadedModulesAndReadMemoryLimited() {
                     std::string moduleName = WStringToUTF8(moduleNameW);
                     std::string modulePath = WStringToUTF8(modulePathW);
 
-                    if (!ends_with_dll(moduleName)) continue;
+                    if (!ends_with_dll(moduleName)) return;
 
                     bool isSuspicious = IsSuspiciousModule(moduleName);
                     bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me32.hModule);
@@ -2404,17 +2323,12 @@ void ListLoadedModulesAndReadMemoryLimited() {
 
                     uintptr_t baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
                     size_t moduleSize = me32.modBaseSize;
-                    if (moduleSize == 0) continue;
+                    if (moduleSize == 0) return;
                     std::string fileHash = CalculateFileSHA256Safe(modulePathW);
                     std::string lowerModulePath = modulePath;
                     std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
                     if (isSuspicious || usesMemoryFunctions) {
                         if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
-
-                            if (Manager::GetInstance().IsWhitelistedDLL(lowerModulePath, fileHash)) {
-                                continue;
-                            }
-
                             if (isSuspicious && usesMemoryFunctions) {
                                 Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
@@ -2473,7 +2387,7 @@ void ListLoadedModulesAndReadMemory() {
                     std::string moduleName = WStringToUTF8(moduleNameW);
                     std::string modulePath = WStringToUTF8(modulePathW);
 
-                    if (!ends_with_dll(moduleName)) continue;
+                    if (!ends_with_dll(moduleName)) return;
                     std::string fileHash = CalculateFileSHA256Safe(modulePathW);
                     bool isSuspicious = IsSuspiciousModule(moduleName);
                     bool usesMemoryFunctions = DoesModuleUseReadWriteMemory(me32.hModule);
@@ -2482,18 +2396,13 @@ void ListLoadedModulesAndReadMemory() {
 
                     uintptr_t baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
                     size_t moduleSize = me32.modBaseSize;
-                    if (moduleSize == 0) continue;
+                    if (moduleSize == 0) return;
 
                     std::string lowerModulePath = modulePath;
                     std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::tolower);
 
                     if (isSuspicious || usesMemoryFunctions) {
-                        if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {
-                         
-                            if (Manager::GetInstance().IsWhitelistedDLL(lowerModulePath, fileHash)) {
-                                continue;
-                            }
-
+                        if (lowerModulePath.find("system32") == std::string::npos && lowerModulePath.find("windows") == std::string::npos) {                       
                             if (isSuspicious && usesMemoryFunctions) {
                                 Log("[WARNING HOOK] INJECTED DLL: " + modulePath + " (" + parentProcessName + ") SHA256: " + fileHash);
                                 ReadModuleMemory(hProcess, baseAddress, moduleSize, processId, processName, moduleName, modulePath);
@@ -3168,10 +3077,6 @@ void CheckProcessForVulkan(HANDLE hProcess, const std::string& processName, DWOR
             bool takeScreenshot = (fileName.find(L"hook.dll") != std::wstring::npos); // только hook.dll
             if (ShouldLog(key, hash, takeScreenshot)) {
                 Log("[VEH] Suspicious module in " + processName + ": " + modPathUTF8 + " | SHA256: " + hash);
-
-                if (takeScreenshot) {
-                   // StartSightImgDetection("[VEH] Suspicious module: " + std::string(modPathUTF8) + " | SHA256: " + hash);
-                }
             }
             continue;
         }
@@ -3457,7 +3362,7 @@ void ForceFullSystemReset() {
         messageCache.clear();
     }
     g_simpleDetector->CleanupOldOperationStats();
-    EPS::CleanupMemory(true);
+    EPS::CleanupMemory(false);
     BD_ApplySmartReset();
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
@@ -3496,8 +3401,6 @@ void CheckMemoryAndCleanup() {
         else {
             cleanupCount = 0;
         }
-
-        // Логируем каждые 1000 MB (1 GB) роста
         if (memoryMB > lastMemoryMB + 1000) {
             LogFormat("[LOGEN] Memory milestone: %zu MB", memoryMB);
             lastMemoryMB = memoryMB;
@@ -3734,6 +3637,9 @@ void InitializeMonitoring() {
         g_config.minDetectionsForLog = 3;
         g_config.enableAggregation = true;
         g_config.logMissedDetections = true;
+
+        SelectAvailableRegion();
+
         isLicenseVersion = DetermineAndSetGameProcessNames();
         if (!isLicenseVersion) {
             ReadSteamUIDStart();
@@ -3741,7 +3647,6 @@ void InitializeMonitoring() {
         else {
             ReadGoldbergUIDStart("Goldberg SteamEmu Saves\\settings\\user_steam_id.txt");
         }
-        Manager::GetInstance().Initialize();
         Sleep(1500);
         HWID();
         Sleep(1500);

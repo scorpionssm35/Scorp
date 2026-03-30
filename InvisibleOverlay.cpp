@@ -14,16 +14,13 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "shell32.lib")
-
 static const wchar_t* OVERLAY_CLASS_NAME = L"DzOverlayUA";
 static const wchar_t* OVERLAY_WINDOW_NAME = L"DzOverlayWindowUA";
-
 std::wstring to_lower(const std::wstring& str) {
     std::wstring result = str;
     std::transform(result.begin(), result.end(), result.begin(), ::towlower);
     return result;
 }
-
 std::string wstring_to_string(const std::wstring& wstr) {
     if (wstr.empty()) return "";
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(),
@@ -33,20 +30,16 @@ std::string wstring_to_string(const std::wstring& wstr) {
         &str[0], size_needed, NULL, NULL);
     return str;
 }
-
 void InvisibleOverlay::LogWarning(const std::string& message) const {
     LogError("[VEH] " + message);
 }
-
 void InvisibleOverlay::LogError(const std::string& message) const {
     Log("[LOGEN] " + message);
 }
-
 void InvisibleOverlay::LogAttack(const std::string& message) const {
     LogError("[VEH] " + message);
     StartSightImgDetection("[VEH] " + message);
 }
-
 InvisibleOverlay::InvisibleOverlay()
     : m_lastAttackTime(std::chrono::steady_clock::now())
     , m_lastDefenseChange(std::chrono::steady_clock::now())
@@ -58,12 +51,10 @@ InvisibleOverlay::InvisibleOverlay()
     LogError("InvisibleOverlay constructor - AGGRESSIVE MODE");
     InitializeSafePaths();
 }
-
 InvisibleOverlay::~InvisibleOverlay() {
     LogError("InvisibleOverlay destructor");
     Destroy();
 }
-
 void InvisibleOverlay::InitializeSafePaths() {
     // Системные пути Windows
     m_safePaths.push_back(L"\\windows\\system32\\");
@@ -148,7 +139,6 @@ void InvisibleOverlay::InitializeSafePaths() {
 
     LogError("Safe paths initialized: " + std::to_string(m_safePaths.size()) + " paths");
 }
-
 bool InvisibleOverlay::Create() {
     if (m_hwnd) {
         return true;
@@ -225,7 +215,6 @@ bool InvisibleOverlay::Create() {
     LogError("Overlay creation complete");
     return true;
 }
-
 void InvisibleOverlay::Destroy() {
     LogError("Destroying overlay...");
 
@@ -241,7 +230,6 @@ void InvisibleOverlay::Destroy() {
     UnregisterClassW(OVERLAY_CLASS_NAME, GetModuleHandle(nullptr));
     LogError("Overlay destroyed");
 }
-
 bool InvisibleOverlay::CaptureThroughOverlay(std::vector<BYTE>& output, int width, int height) {
     std::lock_guard<std::mutex> lock(m_captureMutex);
 
@@ -257,7 +245,6 @@ bool InvisibleOverlay::CaptureThroughOverlay(std::vector<BYTE>& output, int widt
 
     return CaptureUsingBitBlt(output, width, height);
 }
-
 bool InvisibleOverlay::CaptureUsingBitBlt(std::vector<BYTE>& output, int width, int height) {
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) {
@@ -321,7 +308,6 @@ bool InvisibleOverlay::CaptureUsingBitBlt(std::vector<BYTE>& output, int width, 
 
     return true;
 }
-
 void InvisibleOverlay::StartZOrderProtection() {
     if (!m_enableZOrderProtection) {
         LogWarning("Z-order protection disabled");
@@ -341,7 +327,6 @@ void InvisibleOverlay::StartZOrderProtection() {
 
     LogError("Z-order protection started");
 }
-
 void InvisibleOverlay::StopZOrderProtection() {
     LogError("Stopping Z-order protection...");
 
@@ -354,7 +339,6 @@ void InvisibleOverlay::StopZOrderProtection() {
 
     m_running = false;
 }
-
 void InvisibleOverlay::ZOrderGuardLoop() {
     m_running = true;
     int consecutiveAttacks = 0;
@@ -447,7 +431,6 @@ void InvisibleOverlay::ZOrderGuardLoop() {
     LogError("Z-order guard loop stopped");
     m_running = false;
 }
-
 bool InvisibleOverlay::IsSafePath(const std::wstring& path) const {
     if (path.empty()) return false;
 
@@ -495,7 +478,6 @@ bool InvisibleOverlay::IsSafePath(const std::wstring& path) const {
 
     return false;
 }
-
 bool InvisibleOverlay::ForceTopMost() {
     if (!m_hwnd) return false;
 
@@ -518,7 +500,6 @@ bool InvisibleOverlay::ForceTopMost() {
 
     return result;
 }
-
 bool InvisibleOverlay::ForceTopMostAggressive() {
     if (!m_hwnd) return false;
 
@@ -569,7 +550,6 @@ bool InvisibleOverlay::ForceTopMostAggressive() {
     LogError("Aggressive defense mode succeeded");
     return true;
 }
-
 bool InvisibleOverlay::ForceTopMostNuclear() {
     if (!m_hwnd) return false;
 
@@ -634,7 +614,6 @@ bool InvisibleOverlay::ForceTopMostNuclear() {
 
     return success;
 }
-
 bool InvisibleOverlay::ForceTopMostUltimate() {
     if (!m_hwnd) return false;
 
@@ -700,7 +679,6 @@ bool InvisibleOverlay::ForceTopMostUltimate() {
 
     return success;
 }
-
 void InvisibleOverlay::ScanForHiddenOverlays() {
     struct EnumData {
         std::vector<std::pair<HWND, std::string>> overlays;
@@ -765,7 +743,6 @@ void InvisibleOverlay::ScanForHiddenOverlays() {
         BlockCompetitorWindow(overlay.first);
     }
 }
-
 void InvisibleOverlay::BlockCompetitorWindow(HWND competitor) {
     if (!competitor || !IsWindow(competitor)) return;
 
@@ -778,7 +755,6 @@ void InvisibleOverlay::BlockCompetitorWindow(HWND competitor) {
 
     LogAttack("[LOGEN] COMPETITOR WINDOW BLOCKED: " + GetWindowInfo(competitor));
 }
-
 HWND InvisibleOverlay::GetRealTopmostWindow() {
     struct TopmostData {
         HWND topmost = nullptr;
@@ -821,7 +797,6 @@ HWND InvisibleOverlay::GetRealTopmostWindow() {
 
     return data.topmost;
 }
-
 HWND InvisibleOverlay::GetWindowAboveUs() const {
     if (!m_hwnd) return nullptr;
 
@@ -842,7 +817,6 @@ HWND InvisibleOverlay::GetWindowAboveUs() const {
 
     return nullptr;
 }
-
 void InvisibleOverlay::HandleZOrderAttack(HWND attacker) {
     m_zorderAttackCount++;
     m_underAttack = true;
@@ -858,8 +832,6 @@ void InvisibleOverlay::HandleZOrderAttack(HWND attacker) {
         m_defenseLevel = DEFENSE_NUCLEAR;
     }
 }
-
-// НОВЫЙ МЕТОД: Проверка на запуск из временных папок
 bool InvisibleOverlay::IsRunningFromTemp(const std::wstring& path) const {
     std::wstring lowerPath = to_lower(path);
 
@@ -874,8 +846,6 @@ bool InvisibleOverlay::IsRunningFromTemp(const std::wstring& path) const {
 
     return false;
 }
-
-// НОВЫЙ МЕТОД: Проверка на запуск с рабочего стола
 bool InvisibleOverlay::IsRunningFromDesktop(const std::wstring& path) const {
     std::wstring lowerPath = to_lower(path);
 
@@ -895,8 +865,6 @@ bool InvisibleOverlay::IsRunningFromDesktop(const std::wstring& path) const {
 
     return false;
 }
-
-// НОВЫЙ МЕТОД: Проверка на запуск из папки Downloads
 bool InvisibleOverlay::IsRunningFromDownloads(const std::wstring& path) const {
     std::wstring lowerPath = to_lower(path);
 
@@ -914,8 +882,6 @@ bool InvisibleOverlay::IsRunningFromDownloads(const std::wstring& path) const {
 
     return false;
 }
-
-// НОВЫЙ МЕТОД: Проверка на подозрительный родительский процесс
 bool InvisibleOverlay::HasSuspiciousParent(DWORD pid) const {
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) return false;
@@ -973,8 +939,6 @@ bool InvisibleOverlay::HasSuspiciousParent(DWORD pid) const {
 
     return false;
 }
-
-// НОВЫЙ МЕТОД: Получение детальной информации о процессе
 InvisibleOverlay::ProcessInfo InvisibleOverlay::GetDetailedProcessInfo(DWORD pid) const {
     ProcessInfo info;
     info.pid = pid;
@@ -1064,8 +1028,6 @@ InvisibleOverlay::ProcessInfo InvisibleOverlay::GetDetailedProcessInfo(DWORD pid
 
     return info;
 }
-
-// НОВЫЙ МЕТОД: Проверка на известные читы (по хэшам или сигнатурам)
 bool InvisibleOverlay::IsKnownCheatProcess(DWORD pid) const {
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) return false;
@@ -1126,8 +1088,6 @@ bool InvisibleOverlay::IsKnownCheatProcess(DWORD pid) const {
     CloseHandle(hProcess);
     return false;
 }
-
-// НОВЫЙ МЕТОД: Комплексная проверка на подозрительность
 bool InvisibleOverlay::IsSuspiciousProcess(DWORD pid) const {
     // Проверяем кэш
     if (IsProcessCached(pid)) {
@@ -1198,8 +1158,6 @@ bool InvisibleOverlay::IsSuspiciousProcess(DWORD pid) const {
 
     return isSuspicious;
 }
-
-// НОВЫЙ МЕТОД: Получение окна по PID
 HWND InvisibleOverlay::GetWindowByPID(DWORD pid) const {
     struct FindWindowData {
         DWORD pid;
@@ -1219,8 +1177,6 @@ HWND InvisibleOverlay::GetWindowByPID(DWORD pid) const {
 
     return data.hwnd;
 }
-
-// НОВЫЙ МЕТОД: Очистка кэша процессов
 void InvisibleOverlay::CleanupProcessCache() const {
     auto now = std::chrono::steady_clock::now();
     auto it = m_suspiciousProcessCache.begin();
@@ -1236,17 +1192,12 @@ void InvisibleOverlay::CleanupProcessCache() const {
         }
     }
 }
-
-// НОВЫЙ МЕТОД: Проверка наличия в кэше
 bool InvisibleOverlay::IsProcessCached(DWORD pid) const {
     return m_suspiciousProcessCache.find(pid) != m_suspiciousProcessCache.end();
 }
-
-// НОВЫЙ МЕТОД: Сохранение в кэш
 void InvisibleOverlay::CacheProcessResult(DWORD pid, bool isSuspicious) const {
     m_suspiciousProcessCache[pid] = isSuspicious;
 }
-
 void InvisibleOverlay::AnalyzeCompetitor(HWND competitor) {
     if (!competitor) return;
 
@@ -1323,7 +1274,6 @@ void InvisibleOverlay::AnalyzeCompetitor(HWND competitor) {
         }
     }
 }
-
 void InvisibleOverlay::LogAttackDetails(HWND attacker, const std::string& reason) {
     std::stringstream ss;
     ss << "[VEH] " << reason
@@ -1340,7 +1290,6 @@ void InvisibleOverlay::LogAttackDetails(HWND attacker, const std::string& reason
 
     LogAttack(ss.str());
 }
-
 void InvisibleOverlay::RemoveCompetitorsFromTopmost() {
     int removedCount = 0;
 
@@ -1387,7 +1336,6 @@ void InvisibleOverlay::RemoveCompetitorsFromTopmost() {
         LogError("Removed " + std::to_string(removedCount) + " competitors from TOPMOST");
     }
 }
-
 bool InvisibleOverlay::IsOverlayProcess(DWORD pid) const {
     if (pid == 0 || pid == GetCurrentProcessId()) return true;
 
@@ -1416,7 +1364,6 @@ bool InvisibleOverlay::IsOverlayProcess(DWORD pid) const {
     CloseHandle(hProcess);
     return isOverlay;
 }
-
 bool InvisibleOverlay::IsSuspiciousWindow(HWND hwnd) const {
     if (!hwnd || !IsWindow(hwnd)) return false;
 
@@ -1488,7 +1435,6 @@ bool InvisibleOverlay::IsSuspiciousWindow(HWND hwnd) const {
 
     return suspiciousPoints >= 4;  // Порог подозрительности
 }
-
 bool InvisibleOverlay::IsSystemWindow(HWND hwnd) const {
     if (!hwnd) return false;
 
@@ -1518,7 +1464,6 @@ bool InvisibleOverlay::IsSystemWindow(HWND hwnd) const {
     CloseHandle(hProcess);
     return isSystem;
 }
-
 std::string InvisibleOverlay::GetWindowInfo(HWND hwnd) const {
     if (!hwnd) return "NULL";
 
@@ -1549,7 +1494,6 @@ std::string InvisibleOverlay::GetWindowInfo(HWND hwnd) const {
 
     return ss.str();
 }
-
 std::string InvisibleOverlay::GetProcessInfo(DWORD pid) const {
     std::stringstream ss;
     ss << "PID:" << pid;
@@ -1589,7 +1533,6 @@ std::string InvisibleOverlay::GetProcessInfo(DWORD pid) const {
 
     return ss.str();
 }
-
 std::string InvisibleOverlay::GetStatus() const {
     std::stringstream ss;
     ss << "Overlay:" << (m_hwnd ? "CREATED" : "NOT_CREATED");
@@ -1618,7 +1561,6 @@ std::string InvisibleOverlay::GetStatus() const {
 
     return ss.str();
 }
-
 void InvisibleOverlay::EscalateDefense() {
     if (m_defenseLevel < DEFENSE_NUCLEAR) {
         m_defenseLevel = static_cast<ZOrderDefenseLevel>(m_defenseLevel + 1);
@@ -1626,7 +1568,6 @@ void InvisibleOverlay::EscalateDefense() {
         LogError("Defense escalated to level: " + std::to_string(m_defenseLevel));
     }
 }
-
 void InvisibleOverlay::DemoteDefense() {
     if (m_defenseLevel > DEFENSE_NORMAL) {
         m_defenseLevel = static_cast<ZOrderDefenseLevel>(m_defenseLevel - 1);
@@ -1634,7 +1575,6 @@ void InvisibleOverlay::DemoteDefense() {
         LogError("Defense demoted to level: " + std::to_string(m_defenseLevel));
     }
 }
-
 void InvisibleOverlay::ApplyWindowAttributes() {
     if (!m_hwnd) return;
 
@@ -1651,14 +1591,12 @@ void InvisibleOverlay::ApplyWindowAttributes() {
             &disableTransitions, sizeof(disableTransitions));
     }
 }
-
 bool InvisibleOverlay::VerifyTopMostStatus() const {
     if (!m_hwnd) return false;
 
     LONG exStyle = GetWindowLongW(m_hwnd, GWL_EXSTYLE);
     return (exStyle & WS_EX_TOPMOST) != 0;
 }
-
 LRESULT CALLBACK InvisibleOverlay::WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     InvisibleOverlay* pThis = nullptr;
 

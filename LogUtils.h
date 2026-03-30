@@ -140,3 +140,4 @@ void LogFormat(const char* format, ...);
 void Log(const std::string& message);
 bool SafeReadPtr(uintptr_t addr, uintptr_t& out);
 std::string GetSecureIdentifier();
+void SelectAvailableRegion();

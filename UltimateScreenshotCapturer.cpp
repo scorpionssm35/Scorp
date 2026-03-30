@@ -11,6 +11,7 @@
 #include <Gdiplus.h>
 #include "LogUtils.h"
 #include "dllmain.h"
+#include "DetectionAggregator.h"
 #pragma comment(lib, "gdiplus.lib")
 using namespace Gdiplus;
 
@@ -107,7 +108,6 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
     ReleaseDXGIResources();
     Log("[LOGEN] Initializing DXGI Desktop Duplication...");
 
-    // Create D3D11 device
     D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_1,
         D3D_FEATURE_LEVEL_11_0,
@@ -119,7 +119,7 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
-        0,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,  
         featureLevels,
         ARRAYSIZE(featureLevels),
         D3D11_SDK_VERSION,
@@ -133,7 +133,7 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // Get DXGI device
+    // 2. Получаем DXGI устройство
     IDXGIDevice* dxgiDevice = nullptr;
     hr = m_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
     if (FAILED(hr)) {
@@ -141,49 +141,45 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // Get DXGI adapter
+    // 3. Получаем адаптер
     IDXGIAdapter* dxgiAdapter = nullptr;
     hr = dxgiDevice->GetAdapter(&dxgiAdapter);
     dxgiDevice->Release();
-
     if (FAILED(hr)) {
         Log("[LOGEN] Failed to get DXGI adapter: " + HResultToString(hr));
         return false;
     }
 
-    // Get primary output
+    // 4. Получаем основной выход
     IDXGIOutput* dxgiOutput = nullptr;
     hr = dxgiAdapter->EnumOutputs(0, &dxgiOutput);
     dxgiAdapter->Release();
-
     if (FAILED(hr)) {
         Log("[LOGEN] Failed to get DXGI output: " + HResultToString(hr));
         return false;
     }
 
-    // Get output description
+    // 5. Получаем размеры экрана
     DXGI_OUTPUT_DESC outputDesc;
     dxgiOutput->GetDesc(&outputDesc);
     m_screenWidth = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
     m_screenHeight = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
 
-    // Get DXGIOutput1 for duplication
+    // 6. Получаем DXGIOutput1 для Duplication
     IDXGIOutput1* dxgiOutput1 = nullptr;
     hr = dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
     dxgiOutput->Release();
-
     if (FAILED(hr)) {
         Log("[LOGEN] Failed to get DXGIOutput1: " + HResultToString(hr));
         return false;
     }
 
-    // Create desktop duplication (захватывает ВСЁ включая оверлеи)
+    // 7. Создаем Desktop Duplication
     hr = dxgiOutput1->DuplicateOutput(m_d3dDevice, &m_dxgiDuplication);
     dxgiOutput1->Release();
 
     if (FAILED(hr)) {
-        Log("[LOGEN] Desktop duplication not available: " + HResultToString(hr));
-        // Это не фатально - будем использовать fallback
+        Log("[LOGEN] Desktop duplication failed: " + HResultToString(hr));
         return false;
     }
 
@@ -553,6 +549,7 @@ void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
         for (const auto& result : searchData.results) {
             Log(result);
             StartSightImgDetection("[VEH] Overlay:" + result);
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);
         }
     }
     else {
@@ -947,7 +944,6 @@ bool UltimateScreenshotCapturer::CreateAndSendScreenshot(const std::string& serv
     for (int i = 0; i < 2; i++) {
         std::vector<BYTE> sightArea;
 
-        // Используем обновленный CombinedCapture
         if (!CombinedCapture(sightArea)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
