@@ -210,20 +210,19 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     output.clear();
     if (!ShouldCapture()) return false;
 
-    // Жёсткий сброс перед каждой инициализацией (важно для оконного режима)
-    if (!m_dxgiInitialized || !m_dxgiDuplication)
+    Log("[LOGEN] [DXGI FORCE FULL RESET] Releasing all resources before new capture");
+    ReleaseDXGIResources();
+    std::this_thread::sleep_for(std::chrono::milliseconds(400)); // даём ОС полностью отпустить дубликацию
+
+    if (!InitializeDXGICapture())
     {
-        ReleaseDXGIResources();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (!InitializeDXGICapture())
-        {
-            Log("[LOGEN] DXGI re-initialization failed");
-            return false;
-        }
+        Log("[LOGEN] DXGI re-initialization failed even after full reset");
+        return false;
     }
 
-    if (!m_dxgiDuplication) {
-        Log("[LOGEN] No duplication interface available");
+    if (!m_dxgiDuplication)
+    {
+        Log("[LOGEN] No duplication interface after init");
         return false;
     }
 
@@ -235,14 +234,14 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
     {
-        hr = m_dxgiDuplication->AcquireNextFrame(1000, &frameInfo, &desktopResource);
+        hr = m_dxgiDuplication->AcquireNextFrame(1500, &frameInfo, &desktopResource); // увеличил таймаут
 
         if (SUCCEEDED(hr))
         {
             if (frameInfo.LastPresentTime.QuadPart == 0)
             {
-                Log("[LOGEN] Stale frame detected, retrying...");
-                m_dxgiDuplication->ReleaseFrame();
+                Log("[LOGEN] Stale frame, retrying...");
+                if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
                 continue;
             }
             break;
@@ -253,23 +252,21 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
 
         if (hr == DXGI_ERROR_ACCESS_LOST)
         {
-            Log("[LOGEN] ACCESS_LOST detected - full reset");
+            Log("[LOGEN] ACCESS_LOST → full reset");
             ReleaseDXGIResources();
-            std::this_thread::sleep_for(std::chrono::milliseconds(120));
-            if (!InitializeDXGICapture())
-                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            if (!InitializeDXGICapture()) return false;
             continue;
         }
         else if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
         {
-            Log("[LOGEN] Device removed/reset - critical error");
+            Log("[LOGEN] Device removed/reset - critical");
             ReleaseDXGIResources();
             return false;
         }
         else if (hr == DXGI_ERROR_WAIT_TIMEOUT)
         {
-            if (attempt >= 3)
-                Log("[LOGEN] Timeout on attempt " + std::to_string(attempt));
+            Log("[LOGEN] Timeout on attempt " + std::to_string(attempt));
         }
         else
         {
@@ -277,25 +274,21 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
         }
 
         if (attempt < MAX_ATTEMPTS)
-            std::this_thread::sleep_for(std::chrono::milliseconds(80 * attempt));
+            std::this_thread::sleep_for(std::chrono::milliseconds(150 * attempt));
     }
 
     if (FAILED(hr))
     {
-        Log("[LOGEN] All " + std::to_string(MAX_ATTEMPTS) + " attempts failed");
+        Log("[LOGEN] All " + std::to_string(MAX_ATTEMPTS) + " DXGI attempts failed");
         return false;
     }
 
-    // ==================== Успешный захват ====================
+    // === КОПИРОВАНИЕ В ПАМЯТЬ (оставил без изменений, оно у тебя идеальное) ===
     ID3D11Texture2D* desktopTexture = nullptr;
     hr = desktopResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&desktopTexture);
     desktopResource->Release();
 
-    if (FAILED(hr))
-    {
-        m_dxgiDuplication->ReleaseFrame();
-        return false;
-    }
+    if (FAILED(hr)) { m_dxgiDuplication->ReleaseFrame(); return false; }
 
     D3D11_TEXTURE2D_DESC desc{};
     desktopTexture->GetDesc(&desc);
@@ -333,9 +326,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     const BYTE* src = static_cast<const BYTE*>(mapped.pData);
     for (int y = 0; y < height; ++y)
     {
-        memcpy(output.data() + y * width * 4,
-            src + y * mapped.RowPitch,
-            static_cast<size_t>(width) * 4);
+        memcpy(output.data() + y * width * 4, src + y * mapped.RowPitch, static_cast<size_t>(width) * 4);
     }
 
     m_d3dContext->Unmap(stagingTexture, 0);
