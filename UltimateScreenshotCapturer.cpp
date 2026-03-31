@@ -35,7 +35,6 @@ bool InitializeGDIPlus() {
     }
     return false;
 }
-
 void ShutdownGDIPlus() {
     if (g_gdiplusInitialized) {
         GdiplusShutdown(g_gdiplusToken);
@@ -59,12 +58,10 @@ UltimateScreenshotCapturer::UltimateScreenshotCapturer()
 {
     InitializeGDIPlus();
 }
-
 UltimateScreenshotCapturer::~UltimateScreenshotCapturer() {
     Shutdown();
     ShutdownGDIPlus();
 }
-
 bool UltimateScreenshotCapturer::Initialize() {
     if (m_initialized) return true;
 
@@ -100,9 +97,6 @@ void UltimateScreenshotCapturer::Shutdown() {
     }
     ReleaseDXGIResources();     
 }
-
-// ===================== DXGI DESKTOP DUPLICATION =====================
-
 bool UltimateScreenshotCapturer::InitializeDXGICapture() {
     if (m_dxgiInitialized) return true;
     ReleaseDXGIResources();
@@ -116,17 +110,10 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
     };
 
     HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT,  
-        featureLevels,
-        ARRAYSIZE(featureLevels),
-        D3D11_SDK_VERSION,
-        &m_d3dDevice,
-        nullptr,
-        &m_d3dContext
-    );
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        featureLevels, ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION, &m_d3dDevice, nullptr, &m_d3dContext);
 
     if (FAILED(hr)) {
         Log("[LOGEN] Failed to create D3D11 device: " + HResultToString(hr));
@@ -150,12 +137,35 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // 4. Получаем основной выход
+    // === ИСПРАВЛЕНИЕ: правильный выбор монитора по окну DayZ ===
     IDXGIOutput* dxgiOutput = nullptr;
-    hr = dxgiAdapter->EnumOutputs(0, &dxgiOutput);
-    dxgiAdapter->Release();
-    if (FAILED(hr)) {
-        Log("[LOGEN] Failed to get DXGI output: " + HResultToString(hr));
+    RECT gameRect = {};
+    bool foundCorrectOutput = false;
+
+    if (m_gameWindow && GetWindowRect(m_gameWindow, &gameRect)) {
+        for (UINT i = 0; dxgiAdapter->EnumOutputs(i, &dxgiOutput) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_OUTPUT_DESC desc;
+            if (SUCCEEDED(dxgiOutput->GetDesc(&desc))) {
+                POINT center = { (gameRect.left + gameRect.right) / 2, (gameRect.top + gameRect.bottom) / 2 };
+                if (PtInRect(&desc.DesktopCoordinates, center)) {
+                    Log("[LOGEN] Found correct output for DayZ window (monitor " + std::to_string(i) + ")");
+                    foundCorrectOutput = true;
+                    break; // оставляем dxgiOutput
+                }
+            }
+            dxgiOutput->Release();
+            dxgiOutput = nullptr;
+        }
+    }
+
+    if (!foundCorrectOutput) {
+        dxgiAdapter->EnumOutputs(0, &dxgiOutput); // fallback на primary
+        Log("[LOGEN] Using primary monitor as fallback");
+    }
+
+    if (!dxgiOutput) {
+        Log("[LOGEN] Failed to get any DXGI output");
+        dxgiAdapter->Release();
         return false;
     }
 
@@ -165,25 +175,32 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
     m_screenWidth = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
     m_screenHeight = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
 
-    // 6. Получаем DXGIOutput1 для Duplication
+    // 6. Получаем DXGIOutput1
     IDXGIOutput1* dxgiOutput1 = nullptr;
     hr = dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
     dxgiOutput->Release();
     if (FAILED(hr)) {
         Log("[LOGEN] Failed to get DXGIOutput1: " + HResultToString(hr));
+        dxgiAdapter->Release();
         return false;
     }
 
     // 7. Создаем Desktop Duplication
     hr = dxgiOutput1->DuplicateOutput(m_d3dDevice, &m_dxgiDuplication);
     dxgiOutput1->Release();
+    dxgiAdapter->Release();
 
     if (FAILED(hr)) {
         Log("[LOGEN] Desktop duplication failed: " + HResultToString(hr));
         return false;
     }
 
-    Log("[LOGEN] DXGI capture initialized: " + std::to_string(m_screenWidth) + "x" + std::to_string(m_screenHeight));
+    // Дополнительная отладка
+    DXGI_OUTDUPL_DESC duplDesc{};
+    m_dxgiDuplication->GetDesc(&duplDesc);
+
+    Log("[LOGEN] DXGI capture initialized: " + std::to_string(m_screenWidth) + "x" + std::to_string(m_screenHeight) + " (mode: " + std::to_string(duplDesc.ModeDesc.Width) + "x" +
+        std::to_string(duplDesc.ModeDesc.Height) + ", rot: " + std::to_string((int)duplDesc.Rotation) + ", sysmem: " + (duplDesc.DesktopImageInSystemMemory ? "YES" : "NO") + ")");
 
     m_dxgiInitialized = true;
     return true;
@@ -193,10 +210,14 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     output.clear();
     if (!ShouldCapture()) return false;
 
-    // Если нужно — переинициализируем
+    // Жёсткий сброс перед каждой инициализацией (важно для оконного режима)
     if (!m_dxgiInitialized || !m_dxgiDuplication)
     {
-        if (!InitializeDXGICapture()) {
+        ReleaseDXGIResources();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!InitializeDXGICapture())
+        {
+            Log("[LOGEN] DXGI re-initialization failed");
             return false;
         }
     }
@@ -210,23 +231,31 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     IDXGIResource* desktopResource = nullptr;
     HRESULT hr = E_FAIL;
 
-    const int MAX_ATTEMPTS = 4;
+    const int MAX_ATTEMPTS = 5;
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
     {
-        hr = m_dxgiDuplication->AcquireNextFrame(400, &frameInfo, &desktopResource);
+        hr = m_dxgiDuplication->AcquireNextFrame(1000, &frameInfo, &desktopResource);
 
         if (SUCCEEDED(hr))
+        {
+            if (frameInfo.LastPresentTime.QuadPart == 0)
+            {
+                Log("[LOGEN] Stale frame detected, retrying...");
+                m_dxgiDuplication->ReleaseFrame();
+                continue;
+            }
             break;
+        }
 
-        // Всегда освобождаем frame!
         if (m_dxgiDuplication)
             m_dxgiDuplication->ReleaseFrame();
 
         if (hr == DXGI_ERROR_ACCESS_LOST)
         {
-            Log("[LOGEN] ACCESS_LOST detected - resetting resources");
+            Log("[LOGEN] ACCESS_LOST detected - full reset");
             ReleaseDXGIResources();
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
             if (!InitializeDXGICapture())
                 return false;
             continue;
@@ -248,7 +277,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
         }
 
         if (attempt < MAX_ATTEMPTS)
-            Sleep(50 * attempt);
+            std::this_thread::sleep_for(std::chrono::milliseconds(80 * attempt));
     }
 
     if (FAILED(hr))
@@ -313,7 +342,9 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     stagingTexture->Release();
     m_dxgiDuplication->ReleaseFrame();
 
-    Log("[LOGEN] Successfully captured " + std::to_string(width) + "x" + std::to_string(height));
+    Log("[LOGEN] DXGI captured " + std::to_string(width) + "x" + std::to_string(height) +
+        " (" + std::to_string(output.size() / 1024 / 1024) + " MB) - windowed mode");
+
     return true;
 }
 void UltimateScreenshotCapturer::ReleaseDXGIResources()
@@ -327,6 +358,8 @@ void UltimateScreenshotCapturer::ReleaseDXGIResources()
 
     if (m_d3dContext)
     {
+        m_d3dContext->ClearState();
+        m_d3dContext->Flush();
         m_d3dContext->Release();
         m_d3dContext = nullptr;
     }
@@ -366,26 +399,33 @@ bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output
     if (startX + SIGHT_SIZE > screenWidth)  startX = screenWidth - SIGHT_SIZE;
     if (startY + SIGHT_SIZE > screenHeight) startY = screenHeight - SIGHT_SIZE;
 
-    // === DXGI захват ===
+    // === DXGI захват с улучшенными ретраями ===
     std::vector<BYTE> fullDXGI;
     bool dxgiSuccess = false;
 
-    for (int attempt = 0; attempt < 6; ++attempt)
+    const int MAX_DXGI_ATTEMPTS = 6;
+    const int BASE_SLEEP_MS = 500;   
+
+    for (int attempt = 0; attempt < MAX_DXGI_ATTEMPTS; ++attempt)
     {
         if (attempt > 0)
         {
-            Log("[LOGEN] Retry attempt " + std::to_string(attempt + 1) + "...");
-            std::this_thread::sleep_for(std::chrono::milliseconds(40 * (attempt + 1)));
+            Log("[LOGEN] DXGI retry attempt " + std::to_string(attempt + 1) +
+                " (sleep " + std::to_string(BASE_SLEEP_MS * (attempt + 1)) + "ms)...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(BASE_SLEEP_MS * (attempt + 1)));
         }
 
         if (CaptureViaDXGI(fullDXGI))
         {
             dxgiSuccess = true;
-            Log("[LOGEN] Capture successful on attempt " + std::to_string(attempt + 1));
+            Log("[LOGEN] DXGI capture successful on attempt " + std::to_string(attempt + 1));
             break;
         }
-    }
 
+        if (!m_dxgiInitialized) {
+            ReleaseDXGIResources();
+        }
+    }
     if (!dxgiSuccess)
     {
         Log("[LOGEN] All DXGI attempts failed, falling back to legacy");
@@ -464,7 +504,6 @@ bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output
 
     return !output.empty();
 }
-// ===================== Поиск источника оверлея (с поддержкой русского языка) =====================
 void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
     struct OverlaySearchData {
         std::vector<std::string> results;
@@ -589,7 +628,6 @@ void UltimateScreenshotCapturer::DetectOverlayCheats(const std::vector<BYTE>& mo
         LogDetailedOverlaySource();
     }
 }
-
 void UltimateScreenshotCapturer::DetectForeignOverlays() {
     struct OverlayInfo {
         HWND hwnd;
@@ -654,9 +692,6 @@ void UltimateScreenshotCapturer::DetectForeignOverlays() {
         }
     }
 }
-
-// ===================== UPDATED COMBINED CAPTURE =====================
-
 bool UltimateScreenshotCapturer::CombinedCapture(std::vector<BYTE>& output) {
     // FIRST: Try modern DXGI capture (sees everything)
     if (CaptureCombinedModern(output)) {
@@ -671,11 +706,7 @@ bool UltimateScreenshotCapturer::CombinedCapture(std::vector<BYTE>& output) {
 
     return false;
 }
-
-void UltimateScreenshotCapturer::DrawRectangle(std::vector<BYTE>& imageData,
-    int x, int y, int w, int h,
-    BYTE r, BYTE g, BYTE b,
-    int thickness, int width, int height) {
+void UltimateScreenshotCapturer::DrawRectangle(std::vector<BYTE>& imageData, int x, int y, int w, int h, BYTE r, BYTE g, BYTE b, int thickness, int width, int height) {
     if (imageData.empty()) return;
 
     // Ограничиваем координаты
@@ -736,11 +767,7 @@ void UltimateScreenshotCapturer::DrawRectangle(std::vector<BYTE>& imageData,
         }
     }
 }
-
-void UltimateScreenshotCapturer::DrawText(std::vector<BYTE>& imageData,
-    int x, int y, const std::string& text,
-    BYTE r, BYTE g, BYTE b,
-    int width, int height) {
+void UltimateScreenshotCapturer::DrawText(std::vector<BYTE>& imageData, int x, int y, const std::string& text, BYTE r, BYTE g, BYTE b, int width, int height) {
 
     if (text.empty() || x >= width || y >= height) return;
 
@@ -771,8 +798,7 @@ void UltimateScreenshotCapturer::DrawText(std::vector<BYTE>& imageData,
     DeleteObject(hbm);
     DeleteDC(hdc);
 }
-void UltimateScreenshotCapturer::DrawOverlayOnScreenshot(std::vector<BYTE>& imageData,
-    int width, int height) {
+void UltimateScreenshotCapturer::DrawOverlayOnScreenshot(std::vector<BYTE>& imageData, int width, int height) {
     if (!m_overlay || !m_drawOverlayInfo) return;
 
     const auto& overlays = m_overlay->GetDetectedOverlays();
@@ -834,9 +860,6 @@ void UltimateScreenshotCapturer::DrawOverlayOnScreenshot(std::vector<BYTE>& imag
         }
     }
 }
-
-// ===================== YOUR ORIGINAL METHODS (unchanged) =====================
-
 bool UltimateScreenshotCapturer::CombinedCaptureLegacy(std::vector<BYTE>& output) {
     output.clear();
 
@@ -901,7 +924,6 @@ bool UltimateScreenshotCapturer::CombinedCaptureLegacy(std::vector<BYTE>& output
 
     return !output.empty();
 }
-
 bool UltimateScreenshotCapturer::CreateAndSaveScreenshot() {
     if (!m_initialized && !Initialize()) {
         return false;
@@ -931,7 +953,6 @@ bool UltimateScreenshotCapturer::CreateAndSaveScreenshot() {
 
     return false;
 }
-
 bool UltimateScreenshotCapturer::CreateAndSendScreenshot(const std::string& serverIP, int port, const std::string& clientID, const std::string& infouser, const std::wstring& serviceName) {
     if (!m_initialized && !Initialize()) {
         return false;
@@ -960,9 +981,6 @@ bool UltimateScreenshotCapturer::CreateAndSendScreenshot(const std::string& serv
 
     return false;
 }
-
-// ===================== YOUR EXISTING METHODS =====================
-
 bool UltimateScreenshotCapturer::InitializeOverlay() {
     if (!m_overlay) {
         m_overlay = std::make_unique<InvisibleOverlay>();
@@ -985,7 +1003,6 @@ bool UltimateScreenshotCapturer::InitializeOverlay() {
 
     return success;
 }
-
 bool UltimateScreenshotCapturer::CaptureViaOverlay(std::vector<BYTE>& output) {
     if (!ShouldCapture()) {
         return false;
@@ -1037,7 +1054,6 @@ bool UltimateScreenshotCapturer::CaptureViaOverlay(std::vector<BYTE>& output) {
 
     return !output.empty();
 }
-
 bool UltimateScreenshotCapturer::CaptureFullScreenRaw(std::vector<BYTE>& output) {
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -1102,7 +1118,6 @@ bool UltimateScreenshotCapturer::CaptureFullScreenRaw(std::vector<BYTE>& output)
 
     return (getResult != 0);
 }
-
 void UltimateScreenshotCapturer::ExtractRegionFromFullScreen(const std::vector<BYTE>& source, int sourceWidth, int sourceHeight, std::vector<BYTE>& dest, int startX, int startY, int size) {
     dest.resize(size * size * 4);
 
@@ -1126,7 +1141,6 @@ void UltimateScreenshotCapturer::ExtractRegionFromFullScreen(const std::vector<B
         }
     }
 }
-
 void UltimateScreenshotCapturer::ExtractRegion(const std::vector<BYTE>& source, int sourceWidth, int sourceHeight, std::vector<BYTE>& dest, int startX, int startY, int size) {
     dest.resize(size * size * 4);
 
@@ -1147,7 +1161,6 @@ void UltimateScreenshotCapturer::ExtractRegion(const std::vector<BYTE>& source, 
         }
     }
 }
-
 bool UltimateScreenshotCapturer::SendToServerSimple(const std::vector<BYTE>& jpgData, const std::string& serverIP, int port, const std::string& clientID, const std::string& infouser, const std::wstring& serviceName) {
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -1190,7 +1203,6 @@ bool UltimateScreenshotCapturer::SendToServerSimple(const std::vector<BYTE>& jpg
     WSACleanup();
     return true;
 }
-
 bool UltimateScreenshotCapturer::CaptureFullScreen(std::vector<BYTE>& output) {
     const int SIGHT_WIDTH = 400;
     const int SIGHT_HEIGHT = 400;
@@ -1237,7 +1249,6 @@ bool UltimateScreenshotCapturer::CaptureFullScreen(std::vector<BYTE>& output) {
 
     return success && !output.empty();
 }
-
 bool UltimateScreenshotCapturer::CaptureViaGDI(std::vector<BYTE>& output) {
     const int SIGHT_WIDTH = 400;
     const int SIGHT_HEIGHT = 400;
@@ -1309,7 +1320,6 @@ bool UltimateScreenshotCapturer::CaptureViaGDI(std::vector<BYTE>& output) {
 
     return !output.empty();
 }
-
 bool UltimateScreenshotCapturer::SaveAsJPG(const std::vector<BYTE>& imageData, std::vector<BYTE>& jpgOutput) {
     if (imageData.empty()) {
         return false;
@@ -1391,7 +1401,6 @@ bool UltimateScreenshotCapturer::SaveAsJPG(const std::vector<BYTE>& imageData, s
 
     return true;
 }
-
 bool UltimateScreenshotCapturer::SaveToDisk(const std::vector<BYTE>& jpgData) {
     if (jpgData.empty()) {
         return false;
@@ -1417,7 +1426,6 @@ bool UltimateScreenshotCapturer::SaveToDisk(const std::vector<BYTE>& jpgData) {
 
     return true;
 }
-
 int UltimateScreenshotCapturer::GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
     UINT num = 0;
     UINT size = 0;
@@ -1441,7 +1449,6 @@ int UltimateScreenshotCapturer::GetEncoderClsid(const WCHAR* format, CLSID* pCls
     free(pImageCodecInfo);
     return -1;
 }
-
 std::string UltimateScreenshotCapturer::GetScreenshotPath() {
     char localAppDataPath[MAX_PATH];
     std::string screenshotDir;
@@ -1454,7 +1461,6 @@ std::string UltimateScreenshotCapturer::GetScreenshotPath() {
 
     return screenshotDir + "\\DayZ.jpg";
 }
-
 void UltimateScreenshotCapturer::AntiDetectionMeasures() {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -1464,7 +1470,6 @@ void UltimateScreenshotCapturer::AntiDetectionMeasures() {
     GetTickCount();
     GetCurrentThreadId();
 }
-
 BOOL CALLBACK UltimateScreenshotCapturer::EnumWindowsProc(HWND hwnd, LPARAM lParam)
 {
     // Получаем указатель на текущий объект
@@ -1557,7 +1562,6 @@ bool UltimateScreenshotCapturer::IsGameActive() const {
     LogFormat("[LOGEN] IsGameActive: OK - large window %dx%d", width, height);
     return true;
 }
-
 HWND UltimateScreenshotCapturer::FindSpecificDayZWindow() const {
     struct WindowSearchData {
         HWND result = nullptr;
@@ -1607,7 +1611,6 @@ HWND UltimateScreenshotCapturer::FindSpecificDayZWindow() const {
 
     return searchData.result;
 }
-
 bool UltimateScreenshotCapturer::IsGameWindowValid(HWND hwnd) const {
     if (!hwnd || !IsWindow(hwnd)) return false;
 
@@ -1641,8 +1644,6 @@ bool UltimateScreenshotCapturer::IsGameWindowValid(HWND hwnd) const {
 
     return true;
 }
-
-
 bool UltimateScreenshotCapturer::ShouldCapture() const {
     if (g_forceScreenshotMode.load()) {
         return true;
@@ -1662,7 +1663,6 @@ bool UltimateScreenshotCapturer::ShouldCapture() const {
 
     return true;
 }
-
 RECT UltimateScreenshotCapturer::GetGameWindowRect() {
     RECT rect = { 0, 0, 0, 0 };
     if (m_gameWindow && IsGameWindowValid(m_gameWindow)) {
@@ -1674,7 +1674,6 @@ RECT UltimateScreenshotCapturer::GetGameWindowRect() {
     }
     return rect;
 }
-
 POINT UltimateScreenshotCapturer::GetGameSightCenter() {
     POINT cursorPos;
     if (GetCursorPos(&cursorPos)) {
@@ -1693,7 +1692,6 @@ POINT UltimateScreenshotCapturer::GetGameSightCenter() {
     cursorPos.y = windowRect.top + (windowRect.bottom - windowRect.top) / 2;
     return cursorPos;
 }
-
 bool UltimateScreenshotCapturer::RestartWindowsService(LPCWSTR serviceName) {
     SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
     if (!scm) return false;
@@ -1715,7 +1713,6 @@ bool UltimateScreenshotCapturer::RestartWindowsService(LPCWSTR serviceName) {
     CloseServiceHandle(scm);
     return true;
 }
-
 bool UltimateScreenshotCapturer::IsOverlayUnderAttack() const {
     return m_overlay && m_overlay->IsUnderAttack();
 }

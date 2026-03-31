@@ -1398,12 +1398,31 @@ std::string GetModulePath(HANDLE hProcess, HMODULE hModule) {
     }
 }
 std::string WStringToUTF8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    if (sizeNeeded <= 0) return {};
-    std::string strTo(sizeNeeded, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &strTo[0], sizeNeeded, nullptr, nullptr);
-    return strTo;
+    if (wstr.empty()) return std::string();
+
+    int sizeNeeded = WideCharToMultiByte(
+        CP_UTF8,               
+        0,                      
+        wstr.c_str(),          
+        static_cast<int>(wstr.size()), 
+        nullptr, 0,           
+        nullptr, nullptr       
+    );
+
+    if (sizeNeeded <= 0) return std::string();
+
+    std::string result(sizeNeeded, 0);
+    WideCharToMultiByte(
+        CP_UTF8, 0,
+        wstr.c_str(), static_cast<int>(wstr.size()),
+        &result[0], sizeNeeded,
+        nullptr, nullptr
+    );
+    if (!result.empty() && result.back() == '\0') {
+        result.pop_back();
+    }
+
+    return result;
 }
 std::string GetProcessPath(HANDLE hProcess) {
     wchar_t path[MAX_PATH];
