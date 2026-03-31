@@ -1350,7 +1350,7 @@ std::vector<uintptr_t> EPS::GetStaticObjects(uintptr_t world) {
 
 void EPS::CleanupMemory(bool fullReset)
 {
-    Log("[LOGEN] EPS::CleanupMemory Start");
+    //Log("[LOGEN] EPS::CleanupMemory Start");
 
     if (fullReset) {
         {

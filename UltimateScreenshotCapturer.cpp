@@ -12,6 +12,8 @@
 #include "LogUtils.h"
 #include "dllmain.h"
 #include "DetectionAggregator.h"
+#include <WinTrust.h>
+#include <SoftPub.h>
 #pragma comment(lib, "gdiplus.lib")
 using namespace Gdiplus;
 
@@ -65,12 +67,12 @@ UltimateScreenshotCapturer::~UltimateScreenshotCapturer() {
 bool UltimateScreenshotCapturer::Initialize() {
     if (m_initialized) return true;
 
-    Log("[LOGEN] Screenshot capturer: looking for DayZ window...");
+   // Log("[LOGEN] Screenshot capturer: looking for DayZ window...");
 
     // Пытаемся найти окно несколько раз
     for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) {
-            LogFormat("[LOGEN] Window not found, retry %d/5...", attempt + 1);
+           // LogFormat("[LOGEN] Window not found, retry %d/5...", attempt + 1);
             Sleep(2000);
         }
 
@@ -80,7 +82,7 @@ bool UltimateScreenshotCapturer::Initialize() {
 
         if (m_gameWindow) {
             m_initialized = true;
-            Log("[LOGEN] Screenshot capturer initialized: Window found");
+           // Log("[LOGEN] Screenshot capturer initialized: Window found");
             return true;
         }
     }
@@ -97,10 +99,11 @@ void UltimateScreenshotCapturer::Shutdown() {
     }
     ReleaseDXGIResources();     
 }
-bool UltimateScreenshotCapturer::InitializeDXGICapture() {
-    if (m_dxgiInitialized) return true;
-    ReleaseDXGIResources();
-    Log("[LOGEN] Initializing DXGI Desktop Duplication...");
+bool UltimateScreenshotCapturer::InitializeDXGICapture()
+{
+    ReleaseDXGIResources();  // всегда полный сброс
+
+   // Log("[LOGEN] Initializing DXGI Desktop Duplication...");
 
     D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_1,
@@ -120,7 +123,6 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // 2. Получаем DXGI устройство
     IDXGIDevice* dxgiDevice = nullptr;
     hr = m_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
     if (FAILED(hr)) {
@@ -128,7 +130,6 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // 3. Получаем адаптер
     IDXGIAdapter* dxgiAdapter = nullptr;
     hr = dxgiDevice->GetAdapter(&dxgiAdapter);
     dxgiDevice->Release();
@@ -137,7 +138,7 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // === ИСПРАВЛЕНИЕ: правильный выбор монитора по окну DayZ ===
+    // Выбор монитора по окну DayZ
     IDXGIOutput* dxgiOutput = nullptr;
     RECT gameRect = {};
     bool foundCorrectOutput = false;
@@ -150,7 +151,7 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
                 if (PtInRect(&desc.DesktopCoordinates, center)) {
                     Log("[LOGEN] Found correct output for DayZ window (monitor " + std::to_string(i) + ")");
                     foundCorrectOutput = true;
-                    break; // оставляем dxgiOutput
+                    break;
                 }
             }
             dxgiOutput->Release();
@@ -159,7 +160,7 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
     }
 
     if (!foundCorrectOutput) {
-        dxgiAdapter->EnumOutputs(0, &dxgiOutput); // fallback на primary
+        dxgiAdapter->EnumOutputs(0, &dxgiOutput);
         Log("[LOGEN] Using primary monitor as fallback");
     }
 
@@ -169,13 +170,11 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         return false;
     }
 
-    // 5. Получаем размеры экрана
     DXGI_OUTPUT_DESC outputDesc;
     dxgiOutput->GetDesc(&outputDesc);
     m_screenWidth = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
     m_screenHeight = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
 
-    // 6. Получаем DXGIOutput1
     IDXGIOutput1* dxgiOutput1 = nullptr;
     hr = dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
     dxgiOutput->Release();
@@ -184,26 +183,35 @@ bool UltimateScreenshotCapturer::InitializeDXGICapture() {
         dxgiAdapter->Release();
         return false;
     }
+    for (int initAttempt = 0; initAttempt < 4; ++initAttempt)   // +1 попытка
+    {
+        if (initAttempt > 0) {
+            Log("[LOGEN] DuplicateOutput failed, retry " + std::to_string(initAttempt + 1) + " after extra sleep");
+            std::this_thread::sleep_for(std::chrono::milliseconds(600));  // ← увеличил с 350 до 600
+        }
 
-    // 7. Создаем Desktop Duplication
-    hr = dxgiOutput1->DuplicateOutput(m_d3dDevice, &m_dxgiDuplication);
-    dxgiOutput1->Release();
-    dxgiAdapter->Release();
+        hr = dxgiOutput1->DuplicateOutput(m_d3dDevice, &m_dxgiDuplication);
 
-    if (FAILED(hr)) {
-        Log("[LOGEN] Desktop duplication failed: " + HResultToString(hr));
-        return false;
+        if (SUCCEEDED(hr))
+        {
+            DXGI_OUTDUPL_DESC duplDesc{};
+            m_dxgiDuplication->GetDesc(&duplDesc);
+            Log("[LOGEN] DXGI capture initialized: " + std::to_string(m_screenWidth) + "x" + std::to_string(m_screenHeight) +
+                " (mode: " + std::to_string(duplDesc.ModeDesc.Width) + "x" + std::to_string(duplDesc.ModeDesc.Height) +
+                ", rot: " + std::to_string((int)duplDesc.Rotation) + ", sysmem: " + (duplDesc.DesktopImageInSystemMemory ? "YES" : "NO") + ")");
+            m_dxgiInitialized = true;
+            dxgiOutput1->Release();
+            dxgiAdapter->Release();
+            return true;
+        }
+
+       // Log("[LOGEN] DuplicateOutput failed (attempt " + std::to_string(initAttempt + 1) + "): " + HResultToString(hr));
     }
 
-    // Дополнительная отладка
-    DXGI_OUTDUPL_DESC duplDesc{};
-    m_dxgiDuplication->GetDesc(&duplDesc);
-
-    Log("[LOGEN] DXGI capture initialized: " + std::to_string(m_screenWidth) + "x" + std::to_string(m_screenHeight) + " (mode: " + std::to_string(duplDesc.ModeDesc.Width) + "x" +
-        std::to_string(duplDesc.ModeDesc.Height) + ", rot: " + std::to_string((int)duplDesc.Rotation) + ", sysmem: " + (duplDesc.DesktopImageInSystemMemory ? "YES" : "NO") + ")");
-
-    m_dxgiInitialized = true;
-    return true;
+    dxgiOutput1->Release();
+    dxgiAdapter->Release();
+    Log("[LOGEN] Desktop duplication failed after 4 attempts: " + HResultToString(hr));
+    return false;
 }
 bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
 {
@@ -212,7 +220,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
 
     Log("[LOGEN] [DXGI FORCE FULL RESET] Releasing all resources before new capture");
     ReleaseDXGIResources();
-    std::this_thread::sleep_for(std::chrono::milliseconds(400)); // даём ОС полностью отпустить дубликацию
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200)); // ← главное изменение (было 800)
 
     if (!InitializeDXGICapture())
     {
@@ -234,13 +242,13 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
     {
-        hr = m_dxgiDuplication->AcquireNextFrame(1500, &frameInfo, &desktopResource); // увеличил таймаут
+        hr = m_dxgiDuplication->AcquireNextFrame(2000, &frameInfo, &desktopResource); // таймаут увеличен
 
         if (SUCCEEDED(hr))
         {
             if (frameInfo.LastPresentTime.QuadPart == 0)
             {
-                Log("[LOGEN] Stale frame, retrying...");
+                Log("[LOGEN] Stale frame detected, retrying...");
                 if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
                 continue;
             }
@@ -254,7 +262,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
         {
             Log("[LOGEN] ACCESS_LOST → full reset");
             ReleaseDXGIResources();
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
             if (!InitializeDXGICapture()) return false;
             continue;
         }
@@ -274,7 +282,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
         }
 
         if (attempt < MAX_ATTEMPTS)
-            std::this_thread::sleep_for(std::chrono::milliseconds(150 * attempt));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200 * attempt));
     }
 
     if (FAILED(hr))
@@ -283,12 +291,15 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
         return false;
     }
 
-    // === КОПИРОВАНИЕ В ПАМЯТЬ (оставил без изменений, оно у тебя идеальное) ===
+    // === КОПИРОВАНИЕ (без изменений) ===
     ID3D11Texture2D* desktopTexture = nullptr;
     hr = desktopResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&desktopTexture);
     desktopResource->Release();
 
-    if (FAILED(hr)) { m_dxgiDuplication->ReleaseFrame(); return false; }
+    if (FAILED(hr)) {
+        if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
+        return false;
+    }
 
     D3D11_TEXTURE2D_DESC desc{};
     desktopTexture->GetDesc(&desc);
@@ -303,7 +314,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     if (FAILED(hr))
     {
         desktopTexture->Release();
-        m_dxgiDuplication->ReleaseFrame();
+        if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
         return false;
     }
 
@@ -315,7 +326,7 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     if (FAILED(hr))
     {
         stagingTexture->Release();
-        m_dxgiDuplication->ReleaseFrame();
+        if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
         return false;
     }
 
@@ -326,16 +337,21 @@ bool UltimateScreenshotCapturer::CaptureViaDXGI(std::vector<BYTE>& output)
     const BYTE* src = static_cast<const BYTE*>(mapped.pData);
     for (int y = 0; y < height; ++y)
     {
-        memcpy(output.data() + y * width * 4, src + y * mapped.RowPitch, static_cast<size_t>(width) * 4);
+        memcpy(output.data() + static_cast<size_t>(y) * width * 4,
+            src + static_cast<size_t>(y) * mapped.RowPitch,
+            static_cast<size_t>(width) * 4);
     }
 
     m_d3dContext->Unmap(stagingTexture, 0);
     stagingTexture->Release();
-    m_dxgiDuplication->ReleaseFrame();
 
+    if (m_dxgiDuplication) m_dxgiDuplication->ReleaseFrame();
+
+    // <<<=== ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
     Log("[LOGEN] DXGI captured " + std::to_string(width) + "x" + std::to_string(height) +
         " (" + std::to_string(output.size() / 1024 / 1024) + " MB) - windowed mode");
 
+    ReleaseDXGIResources();        // ← полностью освобождаем после УСПЕШНОГО захвата
     return true;
 }
 void UltimateScreenshotCapturer::ReleaseDXGIResources()
@@ -346,21 +362,18 @@ void UltimateScreenshotCapturer::ReleaseDXGIResources()
         m_dxgiDuplication->Release();
         m_dxgiDuplication = nullptr;
     }
-
     if (m_d3dContext)
     {
         m_d3dContext->ClearState();
-        m_d3dContext->Flush();
+        m_d3dContext->Flush();          
         m_d3dContext->Release();
         m_d3dContext = nullptr;
     }
-
     if (m_d3dDevice)
     {
         m_d3dDevice->Release();
         m_d3dDevice = nullptr;
     }
-
     m_dxgiInitialized = false;
 }
 bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output) {
@@ -368,10 +381,6 @@ bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output
     if (!ShouldCapture()) {
         return false;
     }
-
-    Log("[LOGEN] Starting modern capture...");
-
-    // Курсор и область прицела
     POINT cursorPos;
     if (!GetCursorPos(&cursorPos)) {
         cursorPos.x = GetSystemMetrics(SM_CXSCREEN) / 2;
@@ -390,36 +399,32 @@ bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output
     if (startX + SIGHT_SIZE > screenWidth)  startX = screenWidth - SIGHT_SIZE;
     if (startY + SIGHT_SIZE > screenHeight) startY = screenHeight - SIGHT_SIZE;
 
-    // === DXGI захват с улучшенными ретраями ===
+    // === DXGI захват ===
     std::vector<BYTE> fullDXGI;
     bool dxgiSuccess = false;
 
     const int MAX_DXGI_ATTEMPTS = 6;
-    const int BASE_SLEEP_MS = 500;   
+    const int BASE_SLEEP_MS = 1000;  
 
     for (int attempt = 0; attempt < MAX_DXGI_ATTEMPTS; ++attempt)
     {
         if (attempt > 0)
         {
-            Log("[LOGEN] DXGI retry attempt " + std::to_string(attempt + 1) +
-                " (sleep " + std::to_string(BASE_SLEEP_MS * (attempt + 1)) + "ms)...");
+            Log("[LOGEN] DXGI retry attempt " + std::to_string(attempt + 1) + " (sleep " + std::to_string(BASE_SLEEP_MS * (attempt + 1)) + "ms)...");
             std::this_thread::sleep_for(std::chrono::milliseconds(BASE_SLEEP_MS * (attempt + 1)));
         }
 
         if (CaptureViaDXGI(fullDXGI))
         {
             dxgiSuccess = true;
-            Log("[LOGEN] DXGI capture successful on attempt " + std::to_string(attempt + 1));
+            //Log("[LOGEN] DXGI capture successful on attempt " + std::to_string(attempt + 1));
             break;
         }
-
-        if (!m_dxgiInitialized) {
-            ReleaseDXGIResources();
-        }
     }
+
     if (!dxgiSuccess)
     {
-        Log("[LOGEN] All DXGI attempts failed, falling back to legacy");
+       // Log("[LOGEN] All DXGI attempts failed, falling back to legacy");
         ReleaseDXGIResources();
         return CombinedCaptureLegacy(output);
     }
@@ -495,80 +500,149 @@ bool UltimateScreenshotCapturer::CaptureCombinedModern(std::vector<BYTE>& output
 
     return !output.empty();
 }
+bool IsLegitimateSystemOverlay(const std::wstring& processPathW, const std::string& className, HWND hwnd)
+{
+    if (processPathW.empty()) return false;
+
+    std::wstring lowerPath = processPathW;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+
+    wchar_t sysDir[MAX_PATH] = { 0 };
+    GetSystemDirectoryW(sysDir, MAX_PATH);
+    std::wstring realSystem32(sysDir);
+    std::transform(realSystem32.begin(), realSystem32.end(), realSystem32.begin(), ::towlower);
+
+    wchar_t sysWow64[MAX_PATH] = { 0 };
+    GetSystemWow64DirectoryW(sysWow64, MAX_PATH);
+    std::wstring realSysWow64(sysWow64);
+    std::transform(realSysWow64.begin(), realSysWow64.end(), realSysWow64.begin(), ::towlower);
+
+    bool isRealSystemPath = (lowerPath.find(realSystem32) == 0) ||
+        (lowerPath.find(realSysWow64) == 0) ||
+        (lowerPath.find(L"\\windows\\system32\\") != std::wstring::npos) ||
+        (lowerPath.find(L"\\windows\\syswow64\\") != std::wstring::npos);
+
+    if (!isRealSystemPath) {
+        return false;
+    }
+
+    RECT rect = {};
+    if (GetWindowRect(hwnd, &rect)) {
+        int w = rect.right - rect.left;
+        int h = rect.bottom - rect.top;
+        if (w <= 4 && h <= 4) return true;
+    }
+
+    static const std::vector<std::string> legitClasses = {
+        "ThumbnailDeviceHelperWnd", "WorkerW", "Progman", "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd", "MSCTFMonitorWindow", "IME", "ApplicationFrameWindow",
+        "Windows.UI.Core.CoreWindow", "XamlIslandWindow", "TaskManagerWindow"
+    };
+
+    for (const auto& legit : legitClasses) {
+        if (className.find(legit) != std::string::npos) {
+            return true;
+        }
+    }
+
+    // Проверка цифровой подписи
+    WINTRUST_FILE_INFO fileInfo = { sizeof(WINTRUST_FILE_INFO) };
+    fileInfo.pcwszFilePath = processPathW.c_str();
+
+    WINTRUST_DATA trustData = { sizeof(WINTRUST_DATA) };
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+    trustData.dwProvFlags = WTD_SAFER_FLAG | WTD_REVOCATION_CHECK_NONE;
+
+    GUID policyGUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    if (WinVerifyTrust(NULL, &policyGUID, &trustData) == ERROR_SUCCESS) {
+        return true;
+    }
+    std::string hash = CalculateFileSHA256Safe(WStringToUTF8(processPathW)); 
+    if (hash == "6d560ce5e75149dffe1b67f0a9f1a0717c9996d50ef2dbf3349b251b64c3a195") {
+        return true;
+    }
+
+    return false;
+}
 void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
     struct OverlaySearchData {
         std::vector<std::string> results;
         DWORD ourPid = GetCurrentProcessId();
         HWND ourHwnd = nullptr;
-        HWND topWindow = nullptr;
     } searchData;
 
-    // Получаем наше окно
     if (m_overlay && m_overlay->IsCreated()) {
         searchData.ourHwnd = m_overlay->GetWindowHandle();
-    }
-
-    // Находим самое верхнее окно (кроме нашего)
-    searchData.topWindow = GetTopWindow(nullptr);
-    if (searchData.topWindow == searchData.ourHwnd) {
-        searchData.topWindow = GetWindow(searchData.topWindow, GW_HWNDNEXT);
     }
 
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
         auto* data = reinterpret_cast<OverlaySearchData*>(lParam);
 
         if (!IsWindowVisible(hwnd)) return TRUE;
+        if (hwnd == data->ourHwnd) return TRUE;                    // наше окно
 
         LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
         bool isOverlayStyle = (exStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST)) != 0;
-
-        if (!isOverlayStyle && hwnd != data->topWindow) return TRUE;
+        if (!isOverlayStyle) return TRUE;
 
         DWORD pid = 0;
         GetWindowThreadProcessId(hwnd, &pid);
         if (pid == data->ourPid) return TRUE;
 
         WCHAR windowTitle[256] = { 0 };
-        WCHAR className[256] = { 0 };
-        GetWindowTextW(hwnd, windowTitle, sizeof(windowTitle) / sizeof(WCHAR));
-        GetClassNameW(hwnd, className, sizeof(className) / sizeof(WCHAR));
+        WCHAR classNameW[256] = { 0 };
+        GetWindowTextW(hwnd, windowTitle, 256);
+        GetClassNameW(hwnd, classNameW, 256);
 
-        RECT rect;
-        GetWindowRect(hwnd, &rect);
-        int width = rect.right - rect.left;
-        int height = rect.bottom - rect.top;
-
-        std::stringstream ss;
-        ss << "[VEH] OVERLAY SOURCE: ";
-        char windowTitleUTF8[512] = { 0 };
+        // Конвертация в UTF-8
         char classNameUTF8[512] = { 0 };
+        WideCharToMultiByte(CP_UTF8, 0, classNameW, -1, classNameUTF8, sizeof(classNameUTF8), NULL, NULL);
 
-        WideCharToMultiByte(CP_UTF8, 0, windowTitle, -1, windowTitleUTF8, sizeof(windowTitleUTF8), NULL, NULL);
-        WideCharToMultiByte(CP_UTF8, 0, className, -1, classNameUTF8, sizeof(classNameUTF8), NULL, NULL);
+        WCHAR processPathW[MAX_PATH] = { 0 };
+        DWORD pathSize = MAX_PATH;
 
-        ss << "Title=\"" << windowTitleUTF8 << "\"";
-        ss << " | Class=\"" << classNameUTF8 << "\"";
-        ss << " | Size=" << width << "x" << height;
-
-        if (hwnd == data->topWindow) {
-            ss << " [TOP WINDOW]";
-        }
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (hProcess) {
-            WCHAR processPathW[MAX_PATH] = { 0 };
-            DWORD pathSize = MAX_PATH;
-            if (QueryFullProcessImageNameW(hProcess, 0, processPathW, &pathSize)) {
-                // Конвертируем путь в UTF-8 для логирования
-                char processPathUTF8[MAX_PATH * 2] = { 0 };
-                WideCharToMultiByte(CP_UTF8, 0, processPathW, -1, processPathUTF8, sizeof(processPathUTF8), NULL, NULL);
-                ss << " | Path=" << processPathUTF8;
-                std::string utf8Path = processPathUTF8;
-                std::string hash = CalculateFileSHA256Safe(utf8Path);
-                if (!hash.empty() && hash != "failed_to_read_file_or_compute_hash" && hash != "file_not_found") {
-                    ss << " | SHA256=" << hash;
-                }
-            }
+            QueryFullProcessImageNameW(hProcess, 0, processPathW, &pathSize);
             CloseHandle(hProcess);
+        }
+
+        // === ГЛАВНАЯ ПРОВЕРКА ===
+        if (IsLegitimateSystemOverlay(processPathW, classNameUTF8, hwnd)) {
+            return TRUE;   // Легитимное системное окно — пропускаем
+        }
+
+        // Подозрительный оверлей
+        std::stringstream ss;
+        ss << "[VEH] SUSPICIOUS OVERLAY: ";
+
+        char titleUTF8[512] = { 0 };
+        WideCharToMultiByte(CP_UTF8, 0, windowTitle, -1, titleUTF8, sizeof(titleUTF8), NULL, NULL);
+
+        ss << "Title=\"" << titleUTF8 << "\"";
+        ss << " | Class=\"" << classNameUTF8 << "\"";
+
+        RECT rect = {};
+        if (GetWindowRect(hwnd, &rect)) {
+            ss << " | Size=" << (rect.right - rect.left) << "x" << (rect.bottom - rect.top);
+        }
+
+        if (processPathW[0] != 0) {
+            char pathUTF8[512] = { 0 };
+            WideCharToMultiByte(CP_UTF8, 0, processPathW, -1, pathUTF8, sizeof(pathUTF8), NULL, NULL);
+            ss << " | Path=" << pathUTF8;
+
+            // Правильная конвертация wstring → string
+            std::string utf8Path = WStringToUTF8(processPathW);
+            std::string hash = CalculateFileSHA256Safe(utf8Path);
+
+            if (!hash.empty() && hash != "failed_to_read_file_or_compute_hash" && hash != "file_not_found") {
+                ss << " | SHA256=" << hash;
+            }
         }
 
         data->results.push_back(ss.str());
@@ -578,12 +652,9 @@ void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
     if (!searchData.results.empty()) {
         for (const auto& result : searchData.results) {
             Log(result);
-            StartSightImgDetection("[VEH] Overlay:" + result);
+            StartSightImgDetection("[VEH] Suspicious Overlay: " + result);
             g_detectionAggregator.NotifyDangerousPlayer(0ULL);
         }
-    }
-    else {
-        Log("[VEH] No suspicious overlay windows found");
     }
 }
 void UltimateScreenshotCapturer::DetectOverlayCheats(const std::vector<BYTE>& modernCapture, const std::vector<BYTE>& legacyCapture) {

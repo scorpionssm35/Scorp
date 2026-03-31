@@ -88,6 +88,7 @@ typedef int socklen_t;
 std::string VerSVG = "1.1.6.6";
 bool GameProjectdayzzona = false;
 
+HMODULE g_SelfModuleHandle = nullptr;
 MemoryCleaner g_memoryCleaner(10);
 const uint32_t SHA256::K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -908,7 +909,6 @@ void PeriodicServerScreenshotThread()
                 g_periodicScreenshotCapturer.RestartWindowsService(services[idx]);
 
                 std::string prefix = g_forceScreenshotMode.load() ? "FORCED[Image by time]" : "[Image by time]";
-                LogFormat("[LOGEN] Capture hostsc %d/%d: hostport...", hostsc, hostport);
                 bool success = g_periodicScreenshotCapturer.CreateAndSendScreenshot(hostsc, hostport, Goldberg_UID_SC, prefix, g_periodicSelectedService);
 
                 if (success)
@@ -2326,7 +2326,9 @@ void ListLoadedModulesAndReadMemoryLimited() {
 
             if (Module32First(hModuleSnap, &me32)) {
                 do {
-
+                    if (me32.hModule == g_SelfModuleHandle) {
+                        continue;  
+                    }
                     std::wstring moduleNameW = me32.szModule;
                     std::wstring modulePathW = me32.szExePath;
                     std::string moduleName = WStringToUTF8(moduleNameW);
@@ -2400,7 +2402,9 @@ void ListLoadedModulesAndReadMemory() {
 
             if (Module32First(hModuleSnap, &me32)) {
                 do {
-
+                    if (me32.hModule == g_SelfModuleHandle) {
+                        continue;
+                    }
                     std::wstring moduleNameW = me32.szModule;
                     std::wstring modulePathW = me32.szExePath;
                     std::string moduleName = WStringToUTF8(moduleNameW);
@@ -2505,6 +2509,9 @@ void EnhancedModuleCheck() {
 
     if (Module32First(hSnapshot, &me)) {
         do {
+            if (me.hModule == g_SelfModuleHandle) {
+                continue;
+            }
             std::wstring moduleNameW = me.szModule;
             std::wstring modulePathW = me.szExePath;
             std::string moduleName = WStringToUTF8(moduleNameW);
@@ -2667,6 +2674,7 @@ void DetectHiddenModules() {
         if (Module32First(hSnapshot, &me)) {
             do {
                 if (me.th32ProcessID == currentPid) {
+                    if (me.hModule == g_SelfModuleHandle) continue;
                     std::wstring modulePathW = me.szExePath;
                     std::string modulePath = WStringToUTF8(modulePathW);
                     if (!IsSystemModule(modulePath)) {
@@ -2682,6 +2690,7 @@ void DetectHiddenModules() {
     DWORD cbNeeded;
     if (EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded)) {
         for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            if (hMods[i] == g_SelfModuleHandle) continue;
             char modName[MAX_PATH];
             if (GetModuleFileNameA(hMods[i], modName, sizeof(modName))) {
                 std::string modulePath = modName;
@@ -3363,7 +3372,7 @@ SIZE_T GetCurrentMemoryUsageMB() {
     return 0;
 }
 void ForceFullSystemReset() {
-    LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
+    //LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
     BD_ResetSuspicionMetrics();
     BD_ClearLogData();
     if (g_keyMonitor) {
@@ -3398,23 +3407,20 @@ void CheckMemoryAndCleanup() {
 
         static SIZE_T lastMemoryMB = 0;
         static int cleanupCount = 0;
-        if (memoryMB > 8000) {
-            LogFormat("[LOGEN] WARNING: Memory at %zu MB", memoryMB);
-            if (memoryMB > 9000) {
-                LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
-                ForceFullSystemReset();
-                cleanupCount++;
-                if (cleanupCount > 3 && memoryMB > 11000) {
-                    LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
+        if (memoryMB > 10000) {
+            LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
+            ForceFullSystemReset();
+            cleanupCount++;
+            if (cleanupCount > 3 && memoryMB > 11000) {
+                LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
 
-                    // Экстренные меры
-                    BD_ResetSuspicionMetrics();
-                    if (g_keyMonitor) {
-                        g_keyMonitor->ClearAllData();
-                    }
-                    messageCache.clear();
-                    cleanupCount = 0;
+                // Экстренные меры
+                BD_ResetSuspicionMetrics();
+                if (g_keyMonitor) {
+                    g_keyMonitor->ClearAllData();
                 }
+                messageCache.clear();
+                cleanupCount = 0;
             }
         }
         else {
@@ -3768,6 +3774,7 @@ DWORD WINAPI SafeInitialize(LPVOID) {
 }
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ulReason, LPVOID lpReserved) {
     if (ulReason == DLL_PROCESS_ATTACH) {
+        g_SelfModuleHandle = hModule;
         DisableThreadLibraryCalls(hModule);
 
         HANDLE hThread = CreateThread(nullptr, 0, SafeInitialize, nullptr, 0, nullptr);

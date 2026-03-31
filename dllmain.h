@@ -34,3 +34,4 @@ extern std::atomic<int> g_consecutiveSkippedCaptures;
 extern std::atomic<bool> g_forceScreenshotMode;
 extern std::atomic<uint64_t> g_forceModeStartTime;
 std::string GetInjectedProcessName();
+std::string WStringToUTF8(const std::wstring& wstr);
