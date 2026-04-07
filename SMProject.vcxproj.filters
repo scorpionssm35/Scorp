@@ -51,9 +51,6 @@
     <ClInclude Include="UltimateScreenshotCapturer.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
-    <ClInclude Include="KernelCheatDetector.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
     <ClInclude Include="DetectionAggregator.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
@@ -64,9 +61,6 @@
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
     <ClInclude Include="VulkanDetector.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
-    <ClInclude Include="MemoryCleaner.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
   </ItemGroup>
@@ -96,9 +90,6 @@
       <Filter>Исходные файлы</Filter>
     </ClCompile>
     <ClCompile Include="UltimateScreenshotCapturer.cpp">
-      <Filter>Исходные файлы</Filter>
-    </ClCompile>
-    <ClCompile Include="KernelCheatDetector.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
     <ClCompile Include="DetectionAggregator.cpp">

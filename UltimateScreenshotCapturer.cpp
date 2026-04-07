@@ -611,14 +611,34 @@ void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
             CloseHandle(hProcess);
         }
 
-        // === ГЛАВНАЯ ПРОВЕРКА ===
+        // === ПРОВЕРКА НА ЛЕГИТИМНЫЕ СИСТЕМНЫЕ ОКНА ===
         if (IsLegitimateSystemOverlay(processPathW, classNameUTF8, hwnd)) {
             return TRUE;   // Легитимное системное окно — пропускаем
         }
 
-        // Подозрительный оверлей
+        // ★★★ НОВАЯ ПРОВЕРКА: ЛОГГИРУЕМ ТОЛЬКО ЕСЛИ ОКНО АТАКУЕТ Z-ORDER ★★★
+        bool isZOrderAttack = false;
+
+        // Проверяем, находится ли это окно ПОВЕРХ нашего оверлея
+        if (data->ourHwnd) {
+            HWND current = GetWindow(data->ourHwnd, GW_HWNDPREV);
+            while (current) {
+                if (current == hwnd) {
+                    isZOrderAttack = true;
+                    break;
+                }
+                current = GetWindow(current, GW_HWNDPREV);
+            }
+        }
+
+        // Если окно НЕ поверх нашего — не логгируем (это просто фоновая программа)
+        if (!isZOrderAttack) {
+            return TRUE;
+        }
+
+        // === ТОЛЬКО РЕАЛЬНЫЕ АТАКИ НА Z-ORDER ДОХОДЯТ ДО СЮДА ===
         std::stringstream ss;
-        ss << "[VEH] SUSPICIOUS OVERLAY: ";
+        ss << "[VEH] Z-ORDER ATTACK DETECTED: ";
 
         char titleUTF8[512] = { 0 };
         WideCharToMultiByte(CP_UTF8, 0, windowTitle, -1, titleUTF8, sizeof(titleUTF8), NULL, NULL);
@@ -646,14 +666,21 @@ void UltimateScreenshotCapturer::LogDetailedOverlaySource() {
         }
 
         data->results.push_back(ss.str());
+
+        // ★★★ БЛОКИРУЕМ АТАКУЮЩЕЕ ОКНО ★★★
+        // Убираем TOPMOST у атакующего окна
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
         return TRUE;
         }, reinterpret_cast<LPARAM>(&searchData));
 
+    // ЛОГГИРУЕМ ТОЛЬКО РЕАЛЬНЫЕ АТАКИ
     if (!searchData.results.empty()) {
         for (const auto& result : searchData.results) {
-            Log(result);
-            StartSightImgDetection("[VEH] Suspicious Overlay: " + result);
-            g_detectionAggregator.NotifyDangerousPlayer(0ULL);
+            Log(result);  // Логируем в консоль
+            StartSightImgDetection("[VEH] Z-ORDER ATTACK: " + result);  // Скриншот
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);  // Оповещение
         }
     }
 }

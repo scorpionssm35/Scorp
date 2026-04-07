@@ -104,10 +104,6 @@ constexpr uintptr_t OFFSET_AMMO_AIRFRICTION = 0x3B4;      // AmmoType.AirFrictio
 */
 
 /* ==== Имена, логирование и утилиты ==== */
-#define GUARD_REENTRY(functionName) \
-    static std::atomic<bool> __guard_##functionName{ false }; \
-    if (__guard_##functionName.exchange(true)) return; \
-    struct GuardExit_##functionName { ~GuardExit_##functionName() { __guard_##functionName = false; } } __guard_exit_##functionName;
 std::string XorEncrypt(const std::string & input, const std::string & key);
 std::string Base64Encode(const std::string & in);
 extern std::string VerSVG;
@@ -131,7 +127,7 @@ extern std::string Name_GameEXE2;
 
 extern std::mutex cacheMutex;
 static const wchar_t* ProccesMy[] = { L"dayzavr dayz.exe", L"dayzzona launcher.exe", L"system.windows.group.dll" };
-std::string GetModuleNameFromRIP(uintptr_t rip);
+void LogTest(const std::string& message);
 bool IsGameRIP(uintptr_t rip);
 bool IsValidAddress(uintptr_t addr);
 void ReadGoldbergUIDStart(const std::string& relativePath);

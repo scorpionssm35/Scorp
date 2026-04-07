@@ -631,7 +631,6 @@ static void BD_DetectESPPatterns(const std::vector<EPS::TargetLOS>& visibleTarge
         g_suspicionMetrics.espScore += behaviorScore;
         g_suspicionMetrics.wallhackScore += behaviorScore * 0.8f;
         g_suspicionMetrics.totalFlags++;
-        g_detectionAggregator.NotifyDangerousPlayer(target.id ? target.id : 0ULL);
 
         std::string obstacleDisplay = hasObstacle ? "Obstacle" : "None";
 
@@ -650,6 +649,7 @@ static void BD_DetectESPPatterns(const std::vector<EPS::TargetLOS>& visibleTarge
                     << " | ESP+: " << std::fixed << std::setprecision(1) << behaviorScore;
                // Log(ss.str().c_str());
                // StartSightImgDetection("[VEH] ESP_LOOK_AT_INVISIBLE | " + behaviorReason + " | Target: " + target.entityType + "|Dist: " + std::to_string(target.dist) + "m");
+                g_detectionAggregator.NotifyDangerousPlayer(target.id ? target.id : 0ULL);
             }
         }
     }
@@ -1262,6 +1262,7 @@ void BD_DetectNoRecoil(const BDLocalSnapshot& local, uint64_t nowMs) {
 
             if (nowMs - g_lastRecoilLog > 10000) {
                 g_lastRecoilLog = nowMs;
+                g_detectionAggregator.NotifyDangerousPlayer(0ULL);
                // Log(("[VEH] [NORECOIL] Suspicious recoil reduction: " + std::to_string((int)(recoilReduction * 100)) + "% | Base: " + std::to_string(g_recoilData.baseRecoil)).c_str());
                // StartSightImgDetection(("[VEH] [NORECOIL] Suspicious recoil reduction: " + std::to_string((int)(recoilReduction * 100)) + "% | Base: " + std::to_string(g_recoilData.baseRecoil)).c_str());
                // Log("[LOGEN] SCREENSHOT_CAPTURED | NORECOIL detection");
@@ -1274,6 +1275,7 @@ void BD_DetectNoRecoil(const BDLocalSnapshot& local, uint64_t nowMs) {
 
         if (nowMs - g_lastSwayLog > 15000) {
             g_lastSwayLog = nowMs;
+            g_detectionAggregator.NotifyDangerousPlayer(0ULL);
            // Log(("[VEH] [NOSWAY] Zero weapon sway detected | Sway: " + std::to_string(weaponSway)).c_str());
            // StartSightImgDetection(("[VEH] [NOSWAY] Zero weapon sway detected | Sway: " + std::to_string(weaponSway)).c_str());
            // Log("[LOGEN] SCREENSHOT_CAPTURED | NOSWAY detection");
@@ -1314,7 +1316,7 @@ void BD_AnalyzeBullets(uintptr_t world, const BDLocalSnapshot& local, uint64_t n
                 info.velocity.y * info.velocity.y +
                 info.velocity.z * info.velocity.z);
 
-            if (info.speed < 10.0f || info.speed > 1200.0f) {
+            if (info.speed < 10.0f || info.speed > 1500.0f) {
                 isValidBullet = false;
             }
             if (info.startPos.y < -100.0f || info.startPos.y > 5000.0f) {
@@ -1333,6 +1335,7 @@ void BD_AnalyzeBullets(uintptr_t world, const BDLocalSnapshot& local, uint64_t n
 
                 if (nowMs - g_lastBulletLog > 15000) { // Увеличили кулдаун
                     g_lastBulletLog = nowMs;
+                    g_detectionAggregator.NotifyDangerousPlayer(info.id ? info.id : 0ULL);
                    // Log(("[VEH] [BULLET_HACK] Suspicious bullet speed: " + std::to_string((int)info.speed) + " m/s").c_str());
                    // StartSightImg2(("[VEH] [BULLET_HACK] Suspicious bullet speed: " + std::to_string((int)info.speed) + " m/s").c_str());
                 }

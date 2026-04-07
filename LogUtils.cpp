@@ -228,7 +228,7 @@ static std::string GetDLLSHA256() {
     CloseHandle(hFile);
 
     SHA256 sha;
-    sha.update(buffer.data(), buffer.size());
+    sha.update(buffer.data(), bytesRead);
     sha.finalize();
 
     uint8_t* hash = sha.getHash();
@@ -487,27 +487,12 @@ void LogTXT(const std::string& message) {
     try {
         if (message.empty()) return;
         if (message.find("[LOGEN] TCP") != std::string::npos) return;
-
-        std::string processedMessage = message;
-        for (char drive = 'A'; drive <= 'Z'; ++drive) {
-            std::string upperDrivePrefix = std::string(1, drive) + ":\\";
-            std::string lowerDrivePrefix = std::string(1, tolower(drive)) + ":\\";
-            size_t pos = processedMessage.find(upperDrivePrefix);
-            while (pos != std::string::npos) {
-                processedMessage.replace(pos, 3, "");
-                pos = processedMessage.find(upperDrivePrefix, pos);
-            }
-            pos = processedMessage.find(lowerDrivePrefix);
-            while (pos != std::string::npos) {
-                processedMessage.replace(pos, 3, "");
-                pos = processedMessage.find(lowerDrivePrefix, pos);
-            }
-        }
-
+        /*
         std::string uidPrefix = VerSVG + "[Goldberg-" + Goldberg_UID_SC + "] ";
         std::string fullMessage = uidPrefix + processedMessage;
         LogTest(fullMessage);
-        InfoOutMessage(hwid, Goldberg_UID_SC, processedMessage);
+        */
+        InfoOutMessage(hwid, Goldberg_UID_SC, message);
     }
     catch (...) {}
 }
