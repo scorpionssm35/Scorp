@@ -79,7 +79,7 @@ typedef int socklen_t;
 
 std::string VerSVG = "1.1.7.1";
 bool GameProjectMinimal = true;
-bool GameProjectDebag = true;
+bool GameProjectDebag = false;
 
 HMODULE g_SelfModuleHandle = nullptr;
 const uint32_t SHA256::K[64] = {

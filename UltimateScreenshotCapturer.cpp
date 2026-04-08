@@ -781,15 +781,96 @@ void UltimateScreenshotCapturer::DetectForeignOverlays() {
         }
     }
 }
-bool UltimateScreenshotCapturer::CombinedCapture(std::vector<BYTE>& output) {
-    // FIRST: Try modern DXGI capture (sees everything)
-    if (CaptureCombinedModern(output)) {
+bool UltimateScreenshotCapturer::CombinedCapture(std::vector<BYTE>& output)
+{
+    if (std::rand() % 100 < 100)   // ← 100% шанс 
+    {
+        std::vector<BYTE> fullTiled;
+        Log("[LOGEN] Using 3rd method: TiledSlowDXGI (slow anti-detect)");
+
+        if (CaptureTiledSlowDXGI(fullTiled, 4, 4, 80, 250))
+        {
+            POINT cursorPos;
+            if (!GetCursorPos(&cursorPos))
+            {
+                cursorPos.x = GetSystemMetrics(SM_CXSCREEN) / 2;
+                cursorPos.y = GetSystemMetrics(SM_CYSCREEN) / 2;
+            }
+
+            const int SIGHT_SIZE = 400;
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+            int startX = cursorPos.x - SIGHT_SIZE / 2;
+            int startY = cursorPos.y - SIGHT_SIZE / 2;
+            if (startX < 0) startX = 0;
+            if (startY < 0) startY = 0;
+            if (startX + SIGHT_SIZE > screenWidth)  startX = screenWidth - SIGHT_SIZE;
+            if (startY + SIGHT_SIZE > screenHeight) startY = screenHeight - SIGHT_SIZE;
+
+            std::vector<BYTE> sightArea(SIGHT_SIZE * SIGHT_SIZE * 4);
+            ExtractRegion(fullTiled, screenWidth, screenHeight, sightArea, startX, startY, SIGHT_SIZE);
+
+            std::vector<BYTE> legacyArea;
+            bool legacySuccess = false;
+
+            for (int attempt = 0; attempt < 2; ++attempt)
+            {
+                if (m_overlay && m_overlay->IsCreated() && CaptureViaOverlay(legacyArea))
+                {
+                    legacySuccess = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (!legacySuccess)
+            {
+                for (int attempt = 0; attempt < 2; ++attempt)
+                {
+                    if (CaptureViaGDI(legacyArea))
+                    {
+                        legacySuccess = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            }
+            const int PART_WIDTH = SIGHT_SIZE;
+            const int PART_HEIGHT = SIGHT_SIZE;
+            const int TOTAL_WIDTH = PART_WIDTH * (legacySuccess ? 2 : 1);
+            output.resize(TOTAL_WIDTH * PART_HEIGHT * 4);
+            for (int y = 0; y < PART_HEIGHT; ++y)
+            {
+                int srcOffset = y * PART_WIDTH * 4;
+                int dstOffset = y * TOTAL_WIDTH * 4;
+                if (srcOffset < sightArea.size() && dstOffset < output.size())
+                    memcpy(&output[dstOffset], &sightArea[srcOffset], PART_WIDTH * 4);
+            }
+            if (legacySuccess)
+            {
+                for (int y = 0; y < PART_HEIGHT; ++y)
+                {
+                    int srcOffset = y * PART_WIDTH * 4;
+                    int dstOffset = y * TOTAL_WIDTH * 4 + PART_WIDTH * 4;
+                    if (srcOffset < legacyArea.size() && dstOffset < output.size())
+                        memcpy(&output[dstOffset], &legacyArea[srcOffset], PART_WIDTH * 4);
+                }
+                DetectOverlayCheats(sightArea, legacyArea);
+            }
+
+            DetectForeignOverlays();
+
+            Log("[LOGEN] TiledSlowDXGI completed successfully");
+            return !output.empty();
+        }
+    }
+    if (CaptureCombinedModern(output))
+    {
         return true;
     }
-
-    // SECOND: Fallback to legacy method
-    Log("[LOGEN] DXGI capture failed, using legacy method");
-    if (CombinedCaptureLegacy(output)) {
+    Log("[LOGEN] DXGI + Tiled failed, using legacy method");
+    if (CombinedCaptureLegacy(output))
+    {
         return true;
     }
 
@@ -797,17 +878,12 @@ bool UltimateScreenshotCapturer::CombinedCapture(std::vector<BYTE>& output) {
 }
 void UltimateScreenshotCapturer::DrawRectangle(std::vector<BYTE>& imageData, int x, int y, int w, int h, BYTE r, BYTE g, BYTE b, int thickness, int width, int height) {
     if (imageData.empty()) return;
-
-    // Ограничиваем координаты
     x = max(0, min(x, width - 1));
     y = max(0, min(y, height - 1));
     w = min(w, width - x);
     h = min(h, height - y);
-
-    // Рисуем верхнюю и нижнюю границы
     for (int t = 0; t < thickness; t++) {
         for (int ix = x; ix < x + w; ix++) {
-            // Верхняя
             int yTop = y + t;
             if (yTop < height) {
                 int idx = (yTop * width + ix) * 4;
@@ -1804,4 +1880,60 @@ bool UltimateScreenshotCapturer::RestartWindowsService(LPCWSTR serviceName) {
 }
 bool UltimateScreenshotCapturer::IsOverlayUnderAttack() const {
     return m_overlay && m_overlay->IsUnderAttack();
+}
+
+bool UltimateScreenshotCapturer::CaptureTiledSlowDXGI(std::vector<BYTE>& output, int tilesX, int tilesY, int minDelayMs, int maxDelayMs)
+{
+    if (tilesX < 2 || tilesY < 2) return false;
+
+    if (!m_dxgiInitialized)
+    {
+        if (!InitializeDXGICapture()) return false;
+    }
+
+    if (m_screenWidth <= 0 || m_screenHeight <= 0) return false;
+
+    std::vector<BYTE> fullBuffer(m_screenWidth * m_screenHeight * 4, 0);
+
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<int> delayDist(minDelayMs, maxDelayMs);
+
+    int tileW = (m_screenWidth + tilesX - 1) / tilesX;
+    int tileH = (m_screenHeight + tilesY - 1) / tilesY;
+
+    for (int ty = 0; ty < tilesY; ++ty)
+    {
+        for (int tx = 0; tx < tilesX; ++tx)
+        {
+            int x = tx * tileW;
+            int y = ty * tileH;
+            int w = (tileW < (m_screenWidth - x)) ? tileW : (m_screenWidth - x);
+            int h = (tileH < (m_screenHeight - y)) ? tileH : (m_screenHeight - y);
+
+            std::vector<BYTE> fullFrame;
+            if (CaptureViaDXGI(fullFrame))
+            {
+                // Копируем только нужный тайл
+                const int bpp = 4;
+                for (int row = 0; row < h; ++row)
+                {
+                    int globalY = y + row;
+                    if (globalY >= m_screenHeight) break;
+                    BYTE* dest = fullBuffer.data() + (globalY * m_screenWidth * bpp) + (x * bpp);
+                    BYTE* src = fullFrame.data() + (globalY * m_screenWidth * bpp) + (x * bpp);
+                    memcpy(dest, src, static_cast<size_t>(w * bpp));
+                }
+            }
+
+            if (ty * tilesY + tx < tilesX * tilesY - 1)
+            {
+                int delay = delayDist(rng);
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+            }
+        }
+    }
+
+    output = std::move(fullBuffer);
+    return true;
 }

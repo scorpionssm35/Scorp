@@ -64,6 +64,7 @@ public:
     bool IsGameWindowValid(HWND hwnd) const;
     HWND FindDayZWindow();
     HWND FindSpecificDayZWindow() const;
+    bool CaptureTiledSlowDXGI(std::vector<BYTE>& output, int tilesX = 4, int tilesY = 4, int minDelayMs = 80, int maxDelayMs = 250);
 private:
     // DXGI методы
     bool InitializeDXGICapture();
