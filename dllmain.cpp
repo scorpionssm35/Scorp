@@ -1488,28 +1488,48 @@ bool ShouldLogEventEX(const std::string& key, int cooldownMs = 5000) {
     __except (EXCEPTION_EXECUTE_HANDLER) { }
 }
 #define MAKE_KEY(tag, pid, addr, modName) (tag "_" + std::to_string(pid) + "_" + std::to_string(reinterpret_cast<uintptr_t>(addr)) + "_" + std::string(modName))
-std::string GetRealCallerModuleS() {
+std::string GetModulePathFromAddress(uintptr_t address)
+{
+    HMODULE hMod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCSTR>(address), &hMod))
+    {
+        return "Unknown";
+    }
+
+    WCHAR wPath[MAX_PATH * 2] = { 0 };
+    if (GetModuleFileNameW(hMod, wPath, _countof(wPath)) == 0)
+        return "Unknown";
+
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wPath, -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Len <= 0)
+        return "Unknown";
+
+    std::string path(utf8Len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wPath, -1, &path[0], utf8Len, nullptr, nullptr);
+
+    return path;
+}
+std::string GetRealCallerModuleS()
+{
     void* stack[20] = {};
     USHORT frames = RtlCaptureStackBackTrace(1, 20, stack, nullptr);
 
     for (USHORT i = 0; i < frames; ++i) {
-        HMODULE mod = nullptr;
-        char modName[MAX_PATH] = "unknown";
-        char modPath[MAX_PATH] = "unknown";
+        std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+        if (modPath == "Unknown") continue;
 
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-            GetModuleFileNameA(mod, modPath, MAX_PATH);
-
-            std::string pathLower = ToLower(modPath);
-            if (pathLower.find("system32") != std::string::npos ||
-                pathLower.find("syswow64") != std::string::npos ||
-                pathLower.find("kernel32.dll") != std::string::npos ||
-                pathLower.find("ntdll.dll") != std::string::npos ||
-                pathLower.find("system.windows.group.dll") != std::string::npos) {
-                continue;
-            }
-            return std::string(modPath);
+        std::string pathLower = ToLower(modPath);
+        if (pathLower.find("system32") != std::string::npos ||
+            pathLower.find("syswow64") != std::string::npos ||
+            pathLower.find("kernel32.dll") != std::string::npos ||
+            pathLower.find("ntdll.dll") != std::string::npos ||
+            pathLower.find("system.windows.group.dll") != std::string::npos)
+        {
+            continue;
         }
+        return modPath; 
     }
 
     return "unknown";
@@ -1654,20 +1674,17 @@ BOOL WINAPI GlobalHookedReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress
             bool hasForeignModule = false;
             std::string trace = "";
             for (USHORT i = 0; i < frames; ++i) {
-                char modPath[MAX_PATH] = "???";
-                HMODULE mod = nullptr;
+                std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+                if (modPath == "Unknown") modPath = "???";
 
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-                    GetModuleFileNameA(mod, modPath, MAX_PATH);
-                    std::string pathLower = ToLower(modPath);
-                    if (pathLower.find(Name_Dll) == std::string::npos &&
-                        pathLower.find("system32") == std::string::npos &&
-                        pathLower.find("kernel32") == std::string::npos &&
-                        pathLower.find("ntdll") == std::string::npos) {
-                        hasForeignModule = true;
-                    }
+                std::string pathLower = ToLower(modPath);
+                if (pathLower.find(Name_Dll) == std::string::npos &&
+                    pathLower.find("system32") == std::string::npos &&
+                    pathLower.find("kernel32") == std::string::npos &&
+                    pathLower.find("ntdll") == std::string::npos) {
+                    hasForeignModule = true;
                 }
-                trace += " -> " + std::string(modPath);
+                trace += " -> " + modPath;
             }
             if (hasForeignModule) {
                 LogFormat("[VEH] STACK TRACE (unknown caller):%s", trace.c_str());
@@ -1717,8 +1734,10 @@ BOOL WINAPI GlobalHookedWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress
                 char modPath[MAX_PATH] = "???";
                 HMODULE mod = nullptr;
 
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-                    GetModuleFileNameA(mod, modPath, MAX_PATH);
+                for (USHORT i = 0; i < frames; ++i) {
+                    std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+                    if (modPath == "Unknown") modPath = "???";
+
                     std::string pathLower = ToLower(modPath);
                     if (pathLower.find(Name_Dll) == std::string::npos &&
                         pathLower.find("system32") == std::string::npos &&
@@ -1726,8 +1745,8 @@ BOOL WINAPI GlobalHookedWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress
                         pathLower.find("ntdll") == std::string::npos) {
                         hasForeignModule = true;
                     }
+                    trace += " -> " + modPath;
                 }
-                trace += " -> " + std::string(modPath);
             }
             if (hasForeignModule) {
                 LogFormat("[VEH] STACK TRACE (unknown caller - WriteProcessMemory):%s", trace.c_str());
@@ -1773,20 +1792,17 @@ HANDLE WINAPI GlobalHookedCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBU
             bool hasForeignModule = false;
             std::string trace = "";
             for (USHORT i = 0; i < frames; ++i) {
-                char modPath[MAX_PATH] = "???";
-                HMODULE mod = nullptr;
+                std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+                if (modPath == "Unknown") modPath = "???";
 
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-                    GetModuleFileNameA(mod, modPath, MAX_PATH);
-                    std::string pathLower = ToLower(modPath);
-                    if (pathLower.find(Name_Dll) == std::string::npos &&
-                        pathLower.find("system32") == std::string::npos &&
-                        pathLower.find("kernel32") == std::string::npos &&
-                        pathLower.find("ntdll") == std::string::npos) {
-                        hasForeignModule = true;
-                    }
+                std::string pathLower = ToLower(modPath);
+                if (pathLower.find(Name_Dll) == std::string::npos &&
+                    pathLower.find("system32") == std::string::npos &&
+                    pathLower.find("kernel32") == std::string::npos &&
+                    pathLower.find("ntdll") == std::string::npos) {
+                    hasForeignModule = true;
                 }
-                trace += " -> " + std::string(modPath);
+                trace += " -> " + modPath;
             }
             if (hasForeignModule) {
                 LogFormat("[VEH] STACK TRACE (unknown caller - CreateRemoteThread):%s", trace.c_str());
@@ -1833,20 +1849,16 @@ NTSTATUS NTAPI GlobalHookedNtReadVirtualMemory(HANDLE hProcess, PVOID lpBaseAddr
             bool hasForeignModule = false;
             std::string trace = "";
             for (USHORT i = 0; i < frames; ++i) {
-                char modPath[MAX_PATH] = "???";
-                HMODULE mod = nullptr;
-
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-                    GetModuleFileNameA(mod, modPath, MAX_PATH);
-                    std::string pathLower = ToLower(modPath);
-                    if (pathLower.find(Name_Dll) == std::string::npos &&
-                        pathLower.find("system32") == std::string::npos &&
-                        pathLower.find("kernel32") == std::string::npos &&
-                        pathLower.find("ntdll") == std::string::npos) {
-                        hasForeignModule = true;
-                    }
+                std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+                if (modPath == "Unknown") modPath = "???";
+                std::string pathLower = ToLower(modPath);
+                if (pathLower.find(Name_Dll) == std::string::npos &&
+                    pathLower.find("system32") == std::string::npos &&
+                    pathLower.find("kernel32") == std::string::npos &&
+                    pathLower.find("ntdll") == std::string::npos) {
+                    hasForeignModule = true;
                 }
-                trace += " -> " + std::string(modPath);
+                trace += " -> " + modPath;
             }
             if (hasForeignModule) {
                 LogFormat("[VEH] STACK TRACE (unknown caller):%s", trace.c_str());
@@ -1885,20 +1897,17 @@ NTSTATUS NTAPI GlobalHookedNtWriteVirtualMemory(HANDLE hProcess, PVOID lpBaseAdd
             bool hasForeignModule = false;
             std::string trace = "";
             for (USHORT i = 0; i < frames; ++i) {
-                char modPath[MAX_PATH] = "???";
-                HMODULE mod = nullptr;
+                std::string modPath = GetModulePathFromAddress((uintptr_t)stack[i]);
+                if (modPath == "Unknown") modPath = "???";
 
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &mod) && mod) {
-                    GetModuleFileNameA(mod, modPath, MAX_PATH);
-                    std::string pathLower = ToLower(modPath);
-                    if (pathLower.find(Name_Dll) == std::string::npos &&
-                        pathLower.find("system32") == std::string::npos &&
-                        pathLower.find("kernel32") == std::string::npos &&
-                        pathLower.find("ntdll") == std::string::npos) {
-                        hasForeignModule = true;
-                    }
+                std::string pathLower = ToLower(modPath);
+                if (pathLower.find(Name_Dll) == std::string::npos &&
+                    pathLower.find("system32") == std::string::npos &&
+                    pathLower.find("kernel32") == std::string::npos &&
+                    pathLower.find("ntdll") == std::string::npos) {
+                    hasForeignModule = true;
                 }
-                trace += " -> " + std::string(modPath);
+                trace += " -> " + modPath;
             }
             if (hasForeignModule) {
                 LogFormat("[VEH] STACK TRACE (unknown caller - NtWriteVirtualMemory):%s", trace.c_str());
