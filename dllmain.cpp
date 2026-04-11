@@ -77,7 +77,7 @@ typedef int socklen_t;
 [LOGEN]
 */
 
-std::string VerSVG = "1.1.7.1";
+std::string VerSVG = "1.1.8.2";
 bool GameProjectMinimal = true;
 bool GameProjectDebag = false;
 
