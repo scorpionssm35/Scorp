@@ -77,7 +77,7 @@ typedef int socklen_t;
 [LOGEN]
 */
 
-std::string VerSVG = "1.1.8.2";
+std::string VerSVG = "1.2.0.0(opti)";
 bool GameProjectMinimal = true;
 bool GameProjectDebag = false;
 
@@ -3614,7 +3614,7 @@ void ForceFullSystemReset() {
         std::lock_guard<std::mutex> lock(cacheMutex);
         messageCache.clear();
     }
-    EPS::CleanupMemory(false);
+    //EPS::CleanupMemory(false);
     BD_ApplySmartReset();
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
@@ -3631,11 +3631,11 @@ void CheckMemoryAndCleanup() {
 
         static SIZE_T lastMemoryMB = 0;
         static int cleanupCount = 0;
-        if (memoryMB > 10000) {
+        if (memoryMB > 22000) {
             LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
             ForceFullSystemReset();
             cleanupCount++;
-            if (cleanupCount > 3 && memoryMB > 11000) {
+            if (cleanupCount > 3 && memoryMB > 23000) {
                 LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
 
                 // Экстренные меры
@@ -3743,7 +3743,7 @@ DWORD WINAPI InitializeSystemsCycle(LPVOID) {
                     Sleep(5000);
                 }
 
-                if (lastResetTime - lastKernelCleanup > 360000) {
+                if (lastResetTime - lastKernelCleanup > 600000) {
                     ForceFullSystemReset();
                     lastKernelCleanup = lastResetTime;
                     LogFormat("[LOGEN] ForceFullSystemReset... END (cycle %d)", cycleCount);
